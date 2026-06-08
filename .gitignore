@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Entorno y secretos
+.env
+venv/
+.venv/
+
+# Subidas locales (no versionar PDFs de prueba)
+media/
+
+# IDE
+.vscode/
+
+# Tests / cobertura
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Django
+*.log
+db.sqlite3
