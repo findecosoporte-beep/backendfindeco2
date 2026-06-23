@@ -26,5 +26,13 @@ jobs:
       - name: Django check
         run: python manage.py check
 
+      - name: Django check deploy (production)
+        env:
+          DJANGO_ENV: production
+          DJANGO_SECRET_KEY: ci-test-secret-key-not-for-production-use-only-32chars
+          ALLOWED_HOSTS: api.example.com
+          DJANGO_DEBUG: "false"
+        run: python manage.py check --deploy
+
       - name: Run tests
         run: python manage.py test api

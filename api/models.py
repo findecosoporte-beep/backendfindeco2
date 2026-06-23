@@ -56,6 +56,7 @@ class Usuario(models.Model):
         ('administrador', 'administrador'),
         ('asesor', 'asesor'),
         ('supervisor', 'supervisor'),
+        ('cobrador', 'cobrador'),
         (
             'cobranza_adm_jud',
             'Cobranza administrativa / judicial (segun mora)',
@@ -66,7 +67,10 @@ class Usuario(models.Model):
     nombre = models.CharField(max_length=100)
     rol = models.CharField(max_length=40, choices=ROL_CHOICES)
     correo = models.EmailField(max_length=100, unique=True, null=True, blank=True)
-    clave = models.CharField(max_length=255)
+    clave = models.CharField(
+        max_length=255,
+        help_text='DEPRECADO: no usar para autenticación. El acceso es vía Django User + JWT.',
+    )
 
     class Meta:
         """Mapeo ORM: tabla `usuarios` y orden por id."""
@@ -143,6 +147,36 @@ class Cartera(models.Model):
         return f'{self.nombre} ({self.dia_cobro})'
 
 
+class UsuarioCartera(models.Model):
+    """Asignación de cobrador a cartera operativa (una cartera, un cobrador)."""
+
+    objects = models.Manager()
+
+    id_usuario_cartera = models.AutoField(primary_key=True)
+    id_usuario = models.ForeignKey(
+        Usuario,
+        on_delete=models.CASCADE,
+        db_column='id_usuario',
+        related_name='carteras_asignadas',
+    )
+    id_cartera = models.ForeignKey(
+        Cartera,
+        on_delete=models.CASCADE,
+        db_column='id_cartera',
+        related_name='cobradores_asignados',
+    )
+
+    class Meta:
+        db_table = 'usuario_carteras'
+        ordering = ['id_cartera_id']
+        constraints = [
+            models.UniqueConstraint(fields=['id_cartera'], name='uniq_cartera_un_cobrador'),
+        ]
+
+    def __str__(self) -> str:
+        return f'Cobrador {self.id_usuario_id} → Cartera {self.id_cartera_id}'
+
+
 class Prestamo(models.Model):
     """Entidad principal de prestamos."""
 
@@ -175,6 +209,14 @@ class Prestamo(models.Model):
         null=True,
         blank=True,
         db_column='id_zona',
+        related_name='prestamos',
+    )
+    id_cartera = models.ForeignKey(
+        Cartera,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        db_column='id_cartera',
         related_name='prestamos',
     )
     ciclos = models.IntegerField(default=0)
@@ -246,7 +288,7 @@ class PrestamoCuota(models.Model):
 
     def __str__(self) -> str:
         prestamo = self.id_prestamo
-        prestamo_id = prestamo.pk if prestamo is not None else '?'
+        prestamo_id = prestamo.id_prestamo if prestamo is not None else '?'
         return f'Cuota #{self.numero_cuota} - Prestamo {prestamo_id}'
 
 

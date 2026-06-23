@@ -8,6 +8,8 @@ from .views import (
     ClienteViewSet,
     ClienteDocumentoViewSet,
     ContratoPrestamoViewSet,
+    DashboardResumenView,
+    HealthView,
     HistorialPrestamoViewSet,
     MeView,
     PagoViewSet,
@@ -33,7 +35,9 @@ router.register(r'zonas', ZonaViewSet, basename='zonas')
 router.register(r'carteras', CarteraViewSet, basename='carteras')
 
 urlpatterns = [
+    path('health/', HealthView.as_view(), name='health'),
     path('me/', MeView.as_view(), name='me'),
+    path('dashboard/', DashboardResumenView.as_view(), name='dashboard'),
     path('prestamos/simular/', SimulacionPrestamoView.as_view(), name='prestamos-simular'),
     path('', include(router.urls)),
 ]

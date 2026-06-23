@@ -2,7 +2,7 @@
 
 Documento de referencia para llevar la API Django/DRF de **sistema de préstamos** desde el estado actual (MVP sólido) a un despliegue **seguro, observable y mantenible**.
 
-**Estado actual (resumen):** Django 5.2 + DRF, JWT, roles operativos, OpenAPI, paginación estable, tests + CI básica, MySQL opcional. **Bloqueadores principales:** un solo `settings.py` orientado a dev, `views.py` monolítico (~870 líneas), media local, sin health checks ni pipeline de despliegue.
+**Estado actual (resumen):** Fases 0–2 completadas en código (settings por entorno, JWT documentado, throttle login, roles centralizados, admin condicional). **Siguiente foco:** Fase 3 (refactor modular, paso 2+) o Fase 4 (deploy real en DigitalOcean).
 
 **Objetivo:** API en producción con HTTPS, secretos gestionados, MySQL gestionado, archivos en almacenamiento externo, logs y alertas mínimas, código modular por dominio.
 
@@ -81,9 +81,9 @@ MYSQL_PORT=3306
 
 ### 1.3 Criterios de aceptación — Fase 1
 
-- [ ] `DJANGO_ENV=production python manage.py check --deploy` sin errores críticos.
-- [ ] Arranque falla si falta `DJANGO_SECRET_KEY` en producción.
-- [ ] Front local sigue funcionando con `development`.
+- [x] `DJANGO_ENV=production python manage.py check --deploy` sin errores críticos.
+- [x] Arranque falla si falta `DJANGO_SECRET_KEY` en producción.
+- [x] Front local sigue funcionando con `development`.
 
 ---
 
@@ -106,8 +106,10 @@ MYSQL_PORT=3306
 
 **Criterios de aceptación — Fase 2**
 
-- [ ] Pentest básico manual: sin `DEBUG` no filtra stack traces.
-- [ ] Todos los endpoints de escritura exigen JWT + rol correcto.
+- [x] Pentest básico manual: sin `DEBUG` no filtra stack traces (DRF + `DEBUG=False`).
+- [x] Todos los endpoints de escritura exigen JWT + rol correcto (`RoleBasedAccessPermission` + `role_policy.py`).
+- [x] Login JWT con throttle; Swagger oculto en prod (Fase 1).
+- [x] Admin Django desactivado en producción por defecto.
 
 ---
 
@@ -319,7 +321,7 @@ Marcar todo antes de abrir tráfico real:
 
 | Archivo | Rol |
 |---------|-----|
-| `config/settings.py` | Migrar a `config/settings/*` |
+| `config/settings/` | `base.py`, `development.py`, `production.py` |
 | `api/views.py` | Dividir según Fase 3 |
 | `api/permissions.py` | Mantener; auditar roles |
 | `api/exceptions.py` | Mantener formato de error |

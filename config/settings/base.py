@@ -1,15 +1,14 @@
-"""
-Django settings for config project.
-"""
+"""Configuración común Django/DRF para todos los entornos."""
 
 import os
+from datetime import timedelta
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 
 def load_local_env() -> None:
-    """Carga variables de entorno desde .env si existe."""
+    """Carga variables de entorno desde `.env` si existe (solo desarrollo local)."""
     env_path = BASE_DIR / '.env'
     if not env_path.exists():
         return
@@ -22,16 +21,26 @@ def load_local_env() -> None:
         os.environ.setdefault(key.strip(), value.strip())
 
 
+def env_list(name: str, default: list[str]) -> list[str]:
+    raw = os.getenv(name, '').strip()
+    if not raw:
+        return default
+    return [item.strip() for item in raw.split(',') if item.strip()]
+
+
+def env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name, '').strip().lower()
+    if not raw:
+        return default
+    return raw in ('1', 'true', 'yes')
+
+
 load_local_env()
 
-SECRET_KEY = os.getenv(
-    'DJANGO_SECRET_KEY',
-    'django-insecure-dev-only-change-in-production',
+ALLOWED_HOSTS: list[str] = env_list(
+    'ALLOWED_HOSTS',
+    ['127.0.0.1', 'localhost'],
 )
-
-DEBUG = os.getenv('DJANGO_DEBUG', 'true').lower() in ('1', 'true', 'yes')
-
-ALLOWED_HOSTS = ['127.0.0.1', 'localhost']
 
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -49,6 +58,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -77,6 +87,10 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'config.wsgi.application'
 
+_mysql_options: dict = {'charset': 'utf8mb4'}
+if env_bool('MYSQL_SSL'):
+    _mysql_options['ssl'] = {'ssl_mode': 'REQUIRED'}
+
 if os.getenv('MYSQL_DB'):
     DATABASES = {
         'default': {
@@ -86,7 +100,7 @@ if os.getenv('MYSQL_DB'):
             'PASSWORD': os.getenv('MYSQL_PASSWORD', ''),
             'HOST': os.getenv('MYSQL_HOST', '127.0.0.1'),
             'PORT': os.getenv('MYSQL_PORT', '3306'),
-            'OPTIONS': {'charset': 'utf8mb4'},
+            'OPTIONS': _mysql_options,
         }
     }
 else:
@@ -109,9 +123,20 @@ TIME_ZONE = 'America/Tegucigalpa'
 USE_I18N = True
 USE_TZ = True
 
-STATIC_URL = 'static/'
+STATIC_URL = '/static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+STORAGES = {
+    'default': {
+        'BACKEND': 'django.core.files.storage.FileSystemStorage',
+    },
+    'staticfiles': {
+        'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage',
+    },
+}
+
 MEDIA_URL = '/media/'
-MEDIA_ROOT = BASE_DIR / 'media'
+MEDIA_ROOT = Path(os.getenv('MEDIA_ROOT', str(BASE_DIR / 'media')))
+
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 REST_FRAMEWORK = {
@@ -134,6 +159,8 @@ REST_FRAMEWORK = {
     'DEFAULT_THROTTLE_RATES': {
         'anon': '60/min',
         'user': '300/min',
+        'login': '20/min',
+        'login_user': '60/min',
     },
     'DEFAULT_PAGINATION_CLASS': 'api.pagination.StablePageNumberPagination',
     'PAGE_SIZE': 20,
@@ -152,8 +179,28 @@ SPECTACULAR_SETTINGS = {
 SECURE_CONTENT_TYPE_NOSNIFF = True
 X_FRAME_OPTIONS = 'DENY'
 
-CORS_ALLOWED_ORIGINS = [
-    'http://localhost:5173',
-    'http://127.0.0.1:5173',
-]
+CORS_ALLOWED_ORIGINS = env_list(
+    'CORS_ALLOWED_ORIGINS',
+    [
+        'http://localhost:5173',
+        'http://127.0.0.1:5173',
+    ],
+)
 CORS_ALLOW_CREDENTIALS = True
+
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=int(os.getenv('JWT_ACCESS_MINUTES', '60'))),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=int(os.getenv('JWT_REFRESH_DAYS', '7'))),
+    'ROTATE_REFRESH_TOKENS': env_bool('JWT_ROTATE_REFRESH', default=True),
+    'UPDATE_LAST_LOGIN': True,
+    'AUTH_HEADER_TYPES': ('Bearer',),
+    'USER_ID_FIELD': 'id',
+    'USER_ID_CLAIM': 'user_id',
+}
+
+# Sobrescrito en development.py / production.py
+DEBUG = False
+SECRET_KEY = ''
+OPENAPI_ENABLED = False
+DJANGO_ENABLE_ADMIN = False
+DJANGO_ADMIN_URL = 'admin/'
