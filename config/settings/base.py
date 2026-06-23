@@ -35,6 +35,36 @@ def env_bool(name: str, default: bool = False) -> bool:
     return raw in ('1', 'true', 'yes')
 
 
+def mysql_env(name: str, *aliases: str, default: str = '') -> str:
+    """Lee variable MySQL; acepta alias de Railway (MYSQLHOST, MYSQLDATABASE, etc.)."""
+    for key in (name, *aliases):
+        value = os.getenv(key, '').strip()
+        if value:
+            return value
+    return default
+
+
+def mysql_database_config() -> dict | None:
+    """Config Django MySQL desde MYSQL_* o variables nativas de Railway."""
+    db_name = mysql_env('MYSQL_DB', 'MYSQLDATABASE')
+    if not db_name:
+        return None
+
+    options: dict = {'charset': 'utf8mb4'}
+    if env_bool('MYSQL_SSL'):
+        options['ssl'] = {'ssl_mode': 'REQUIRED'}
+
+    return {
+        'ENGINE': 'django.db.backends.mysql',
+        'NAME': db_name,
+        'USER': mysql_env('MYSQL_USER', 'MYSQLUSER', default='root'),
+        'PASSWORD': mysql_env('MYSQL_PASSWORD', 'MYSQLPASSWORD'),
+        'HOST': mysql_env('MYSQL_HOST', 'MYSQLHOST', default='127.0.0.1'),
+        'PORT': mysql_env('MYSQL_PORT', 'MYSQLPORT', default='3306'),
+        'OPTIONS': options,
+    }
+
+
 load_local_env()
 
 ALLOWED_HOSTS: list[str] = env_list(
@@ -87,22 +117,9 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'config.wsgi.application'
 
-_mysql_options: dict = {'charset': 'utf8mb4'}
-if env_bool('MYSQL_SSL'):
-    _mysql_options['ssl'] = {'ssl_mode': 'REQUIRED'}
-
-if os.getenv('MYSQL_DB'):
-    DATABASES = {
-        'default': {
-            'ENGINE': 'django.db.backends.mysql',
-            'NAME': os.getenv('MYSQL_DB'),
-            'USER': os.getenv('MYSQL_USER', 'root'),
-            'PASSWORD': os.getenv('MYSQL_PASSWORD', ''),
-            'HOST': os.getenv('MYSQL_HOST', '127.0.0.1'),
-            'PORT': os.getenv('MYSQL_PORT', '3306'),
-            'OPTIONS': _mysql_options,
-        }
-    }
+_mysql_config = mysql_database_config()
+if _mysql_config:
+    DATABASES = {'default': _mysql_config}
 else:
     DATABASES = {
         'default': {

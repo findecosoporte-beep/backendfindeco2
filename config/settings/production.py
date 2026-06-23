@@ -11,6 +11,10 @@ SECRET_KEY = os.getenv('DJANGO_SECRET_KEY', '').strip()
 if not SECRET_KEY:
     raise RuntimeError('DJANGO_SECRET_KEY es obligatorio en producción (DJANGO_ENV=production).')
 
+_railway_domain = os.getenv('RAILWAY_PUBLIC_DOMAIN', '').strip()
+if _railway_domain and _railway_domain not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS = [*ALLOWED_HOSTS, _railway_domain]
+
 _local_hosts = {'127.0.0.1', 'localhost'}
 if not ALLOWED_HOSTS or set(ALLOWED_HOSTS) <= _local_hosts:
     raise RuntimeError(
