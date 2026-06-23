@@ -46,7 +46,7 @@ def mysql_env(name: str, *aliases: str, default: str = '') -> str:
 
 def mysql_database_config() -> dict | None:
     """Config Django MySQL desde MYSQL_* o variables nativas de Railway."""
-    db_name = mysql_env('MYSQL_DB', 'MYSQLDATABASE')
+    db_name = mysql_env('MYSQL_DB', 'MYSQLDATABASE', 'BASE_DE_DATOS_MYSQL')
     if not db_name:
         return None
 
@@ -57,8 +57,8 @@ def mysql_database_config() -> dict | None:
     return {
         'ENGINE': 'django.db.backends.mysql',
         'NAME': db_name,
-        'USER': mysql_env('MYSQL_USER', 'MYSQLUSER', default='root'),
-        'PASSWORD': mysql_env('MYSQL_PASSWORD', 'MYSQLPASSWORD'),
+        'USER': mysql_env('MYSQL_USER', 'MYSQLUSER', 'USUARIO_DE_MYSQL', default='root'),
+        'PASSWORD': mysql_env('MYSQL_PASSWORD', 'MYSQLPASSWORD', 'CONTRASEÑA_DE_MYSQL'),
         'HOST': mysql_env('MYSQL_HOST', 'MYSQLHOST', default='127.0.0.1'),
         'PORT': mysql_env('MYSQL_PORT', 'MYSQLPORT', default='3306'),
         'OPTIONS': options,

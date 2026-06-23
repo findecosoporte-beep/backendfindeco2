@@ -15,20 +15,27 @@ Guía para conectar la API Django al MySQL del mismo proyecto en [Railway](https
 
 ## 3. Conectar la API a MySQL
 
-1. Abre el servicio **web** (tu API, no el de MySQL)
+Lo que ves en la captura es el servicio **MySQL** (correcto). Esas variables viven ahí.
+
+Para que la API las use, debes **referenciarlas en el servicio web** (backend), no copiarlas a mano:
+
+1. Abre el servicio **web** de tu API (el de GitHub `backendfindeco2`, no MySQL)
 2. Pestaña **Variables**
-3. Pulsa **+ New Variable** → **Add Reference**
-4. Selecciona el servicio **MySQL** y marca estas variables:
+3. **+ Nueva variable** → **Agregar referencia de variable** (o *Add Reference*)
+4. Elige el servicio **MySQL**
+5. Marca estas 5 (nombres en inglés o español según tu panel):
 
-| Variable Railway | Uso en Django |
-|------------------|---------------|
-| `MYSQLHOST` | Host de la base |
-| `MYSQLPORT` | Puerto |
-| `MYSQLUSER` | Usuario |
-| `MYSQLPASSWORD` | Contraseña |
-| `MYSQLDATABASE` | Nombre de la BD |
+| En tu panel (español) | Nombre técnico | Uso |
+|------------------------|----------------|-----|
+| `MYSQLHOST` | `MYSQLHOST` | Host |
+| `MYSQLPORT` | `MYSQLPORT` | Puerto |
+| `USUARIO_DE_MYSQL` | `MYSQLUSER` | Usuario |
+| `CONTRASEÑA_DE_MYSQL` | `MYSQLPASSWORD` | Contraseña |
+| `BASE_DE_DATOS_MYSQL` | `MYSQLDATABASE` | Nombre BD |
 
-La API las lee automáticamente (no necesitas renombrarlas a `MYSQL_HOST`, etc.).
+**No necesitas** `URL_MYSQL`, `URL_PÚBLICA_DE_MYSQL` ni `CONTRASEÑA_ROOT_MYSQL` en el servicio web.
+
+Al guardar, en el servicio **web** deberías ver las mismas variables con un icono de enlace (referencia al MySQL).
 
 ## 4. Variables obligatorias de la API
 
