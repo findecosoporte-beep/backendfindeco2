@@ -3,6 +3,19 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# Railway: forzar producción (evita DisallowedHost si el panel deja development)
+if [[ -n "${RAILWAY_ENVIRONMENT:-}" ]]; then
+  export DJANGO_ENV=production
+  export DJANGO_DEBUG=false
+  export DJANGO_SECURE_SSL_REDIRECT=false
+  _domain="${RAILWAY_PUBLIC_DOMAIN:-}"
+  if [[ -n "$_domain" ]]; then
+    export ALLOWED_HOSTS="${_domain},.up.railway.app"
+  else
+    export ALLOWED_HOSTS=".up.railway.app"
+  fi
+fi
+
 python manage.py migrate --noinput
 
 exec gunicorn config.wsgi:application \

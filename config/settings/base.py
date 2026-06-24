@@ -25,7 +25,12 @@ def env_list(name: str, default: list[str]) -> list[str]:
     raw = os.getenv(name, '').strip()
     if not raw:
         return default
-    return [item.strip() for item in raw.split(',') if item.strip()]
+    raw = raw.strip('"').strip("'")
+    return [
+        item.strip().strip('"').strip("'")
+        for item in raw.split(',')
+        if item.strip()
+    ]
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -71,6 +76,15 @@ ALLOWED_HOSTS: list[str] = env_list(
     'ALLOWED_HOSTS',
     ['127.0.0.1', 'localhost'],
 )
+
+# Railway: dominio público y subdominios *.up.railway.app
+_railway_domain = os.getenv('RAILWAY_PUBLIC_DOMAIN', '').strip().strip('"').strip("'")
+if _railway_domain and _railway_domain not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS = [*ALLOWED_HOSTS, _railway_domain]
+if os.getenv('RAILWAY_ENVIRONMENT') or _railway_domain:
+    for railway_host in ('.up.railway.app', '.railway.app'):
+        if railway_host not in ALLOWED_HOSTS:
+            ALLOWED_HOSTS = [*ALLOWED_HOSTS, railway_host]
 
 INSTALLED_APPS = [
     'django.contrib.admin',

@@ -7,3 +7,9 @@ startCommand = "bash scripts/start.sh"
 healthcheckPath = "/api/v1/health/"
 healthcheckTimeout = 300
 restartPolicyType = "ON_FAILURE"
+
+[variables]
+DJANGO_ENV = "production"
+DJANGO_DEBUG = "false"
+DJANGO_SECURE_SSL_REDIRECT = "false"
+ALLOWED_HOSTS = ".up.railway.app"
