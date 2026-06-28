@@ -273,6 +273,54 @@ class RolePermissionIntegrationTestCase(APITestCase):
         self.assertEqual(response_80['Content-Type'], 'application/pdf')
         self.assertIn('80mm', response_80['Content-Disposition'])
 
+    def test_estado_cuenta_pdf_prestamo_retorna_pdf(self):
+        self._auth_with_role(role='supervisor', email='pdf.estado@test.com')
+        cliente = Cliente.objects.create(
+            nombre='Cliente Estado PDF',
+            dni='0801-2000-00020',
+            telefono='98765432',
+        )
+        usuario_operativo = Usuario.objects.get(correo='pdf.estado@test.com')
+        prestamo = Prestamo.objects.create(
+            numero_prestamo='PRE-EC-PDF-001',
+            id_cliente=cliente,
+            id_usuario=usuario_operativo,
+            monto=Decimal('8000.00'),
+            plazo=8,
+            tasa_interes=Decimal('12.00'),
+            estado='activo',
+            forma_pago='mensual',
+            forma_desembolso='efectivo',
+            comision=Decimal('0.00'),
+            fecha_entrega=date.today(),
+            fecha_vencimiento=date.today() + timedelta(days=240),
+        )
+        PrestamoCuota.objects.create(
+            id_prestamo=prestamo,
+            numero_cuota=1,
+            fecha_programada=date.today(),
+            capital_programado=Decimal('900.00'),
+            interes_programado=Decimal('80.00'),
+            total_programado=Decimal('980.00'),
+            saldo_capital_programado=Decimal('7100.00'),
+        )
+        Pago.objects.create(
+            id_prestamo=prestamo,
+            fecha_pago=date.today(),
+            documento='Cuota 1',
+            capital=Decimal('900.00'),
+            interes=Decimal('80.00'),
+            mora=Decimal('0.00'),
+            saldo=Decimal('7100.00'),
+        )
+
+        response = self.client.get(f'/api/v1/prestamos/{prestamo.id_prestamo}/estado-cuenta-pdf/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response['Content-Type'], 'application/pdf')
+        self.assertTrue(response.content.startswith(b'%PDF'))
+        self.assertIn('inline', response['Content-Disposition'])
+        self.assertIn('PRE-EC-PDF-001', response['Content-Disposition'])
+
     def test_no_permite_cuota_duplicada_cuando_esta_pagada_totalmente(self):
         self._auth_with_role(role='supervisor', email='dup.cuota@test.com')
         cliente = Cliente.objects.create(nombre='Cliente Duplicado', dni='0801-2000-00010')

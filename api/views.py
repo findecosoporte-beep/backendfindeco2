@@ -33,6 +33,7 @@ from .clientes_excel import (
     generar_plantilla_clientes_xlsx,
     importar_clientes_xlsx,
 )
+from .estado_cuenta_export import exportar_estado_cuenta_pdf, recolectar_datos_estado_cuenta
 from .historial_pagos_export import (
     exportar_historial_pagos_pdf,
     exportar_historial_pagos_xlsx,
@@ -1174,6 +1175,17 @@ class PrestamoViewSet(viewsets.ModelViewSet):
             },
             status=201,
         )
+
+    @action(detail=True, methods=['get'], url_path='estado-cuenta-pdf')
+    def estado_cuenta_pdf(self, request, pk=None):
+        """Retorna un PDF con el estado de cuenta del préstamo."""
+        prestamo = self.get_object()
+        datos = recolectar_datos_estado_cuenta(prestamo)
+        pdf_content = exportar_estado_cuenta_pdf(datos)
+        slug = (prestamo.numero_prestamo or str(prestamo.id_prestamo)).replace(' ', '-')
+        response = HttpResponse(pdf_content, content_type='application/pdf')
+        response['Content-Disposition'] = f'inline; filename="estado-cuenta-{slug}.pdf"'
+        return response
 
 
 def _rango_periodo_historial_pagos(
