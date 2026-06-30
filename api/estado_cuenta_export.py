@@ -26,6 +26,16 @@ ETIQUETAS_ESTADO_PRESTAMO = {
     'cancelado': 'Cancelado',
 }
 
+MARGIN_H_MM = 14
+# Ancho útil carta (letter) menos márgenes laterales del documento.
+TABLE_WIDTH_MM = (letter[0] / mm) - (2 * MARGIN_H_MM)
+_COL_RATIO_PLAN_CUOTAS = (12, 24, 26, 26, 22, 24)
+
+
+def _anchos_tabla_plan_cuotas() -> list[float]:
+    total_ratio = sum(_COL_RATIO_PLAN_CUOTAS)
+    return [TABLE_WIDTH_MM * ratio / total_ratio * mm for ratio in _COL_RATIO_PLAN_CUOTAS]
+
 
 def _format_fecha(iso: str | None) -> str:
     if not iso:
@@ -137,12 +147,14 @@ def exportar_estado_cuenta_pdf(datos: dict) -> bytes:
         fontSize=14,
         alignment=1,
         spaceAfter=6,
+        textColor=colors.black,
     )
     meta_style = ParagraphStyle(
         'EcMeta',
         parent=styles['Normal'],
         fontSize=9,
         spaceAfter=2,
+        textColor=colors.black,
     )
     section_style = ParagraphStyle(
         'EcSection',
@@ -150,6 +162,7 @@ def exportar_estado_cuenta_pdf(datos: dict) -> bytes:
         fontSize=10,
         spaceBefore=8,
         spaceAfter=4,
+        textColor=colors.black,
     )
 
     story = []
@@ -214,19 +227,22 @@ def exportar_estado_cuenta_pdf(datos: dict) -> bytes:
             ]
         )
 
-    col_widths = [12 * mm, 24 * mm, 26 * mm, 26 * mm, 22 * mm, 24 * mm]
+    col_widths = _anchos_tabla_plan_cuotas()
     table = Table(table_data, colWidths=col_widths, repeatRows=1)
     table.setStyle(
         TableStyle(
             [
-                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1F4E79')),
+                ('BACKGROUND', (0, 0), (-1, 0), colors.black),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+                ('TEXTCOLOR', (0, 1), (-1, -1), colors.black),
                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
                 ('FONTSIZE', (0, 0), (-1, -1), 8),
                 ('ALIGN', (2, 0), (3, -1), 'RIGHT'),
-                ('GRID', (0, 0), (-1, -1), 0.25, colors.grey),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+                ('BOX', (0, 0), (-1, -1), 0.5, colors.black),
                 ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F7F9FC')]),
             ]
         )
     )
