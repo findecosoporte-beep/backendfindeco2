@@ -45,8 +45,10 @@ from .core.money import round_money
 from .core.prestamo_calc import (
     annual_rate_from_nominal,
     frecuencia_anual,
-    periodic_rate_from_nominal,
-    periods_from_months,
+    interes_total_pct_semanal,
+    periodos_desde_plazo,
+    tasa_periodica_para_calculo,
+    tasa_semanal_negocio,
     plan_totales_desde_condiciones,
 )
 from .core.distribucion_pago import (
@@ -458,15 +460,20 @@ class SimulacionPrestamoView(APIView):
         data = serializer.validated_data
 
         monto = Decimal(data['monto'])
-        plazo_meses = int(data['plazo'])
+        plazo = int(data['plazo'])
         forma_pago = data['forma_pago']
         tasa_nominal_pct = Decimal(data['tasa_interes'])
-        tasa_anual_pct = annual_rate_from_nominal(tasa_nominal_pct)
-        tasa_periodica = periodic_rate_from_nominal(tasa_nominal_pct, forma_pago) / Decimal('100')
+        if forma_pago == 'semanal':
+            tasa_aplicada_pct = tasa_semanal_negocio(plazo)
+            tasa_anual_pct = interes_total_pct_semanal(plazo)
+        else:
+            tasa_aplicada_pct = tasa_nominal_pct
+            tasa_anual_pct = annual_rate_from_nominal(tasa_nominal_pct)
+        tasa_periodica = tasa_periodica_para_calculo(tasa_nominal_pct, forma_pago, plazo) / Decimal('100')
         comision_pct = Decimal(data['comision']) / Decimal('100')
 
         frecuencia = frecuencia_anual(forma_pago)
-        periodos = periods_from_months(plazo_meses, forma_pago)
+        periodos = periodos_desde_plazo(plazo, forma_pago)
         capital_fijo = round_money(monto / Decimal(periodos))
         interes_fijo = round_money(monto * tasa_periodica)
         cuota = round_money(capital_fijo + interes_fijo)
@@ -507,7 +514,7 @@ class SimulacionPrestamoView(APIView):
                 'monto': float(round_money(monto)),
                 'plazo': periodos,
                 'forma_pago': forma_pago,
-                'tasa_interes': float(data['tasa_interes']),
+                'tasa_interes': float(tasa_aplicada_pct),
                 'tasa_anual': float(round_money(tasa_anual_pct)),
                 'comision': float(data['comision']),
                 'frecuencia_anual': frecuencia,

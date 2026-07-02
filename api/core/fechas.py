@@ -185,7 +185,7 @@ def calculate_fecha_vencimiento(
 
     if forma_pago == 'semanal':
 
-        return fecha_entrega + timedelta(days=plazo * 4 * 7)
+        return fecha_entrega + timedelta(days=plazo * 7)
 
     if forma_pago == 'quincenal':
 

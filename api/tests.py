@@ -382,7 +382,7 @@ class RolePermissionIntegrationTestCase(APITestCase):
             'id_usuario': usuario_operativo.id_usuario,
             'id_cartera': cartera.id_cartera,
             'monto': '10000.00',
-            'plazo': 3,
+            'plazo': 6,
             'tasa_interes': '10.00',
             'estado': 'activo',
             'forma_pago': 'semanal',
@@ -432,14 +432,14 @@ class RolePermissionIntegrationTestCase(APITestCase):
         filas = [f for f in reporte.data['filas'] if f['numero_prestamo'] == 'PRE-EXC-001']
         self.assertEqual(len(filas), 1)
         fila = filas[0]
-        self.assertEqual(Decimal(fila['saldo_inicial']), Decimal('13000.00'))
-        self.assertEqual(Decimal(fila['saldo_actual']), Decimal('11000.00'))
+        self.assertEqual(Decimal(fila['saldo_inicial']), Decimal('11500.00'))
+        self.assertEqual(Decimal(fila['saldo_actual']), Decimal('9500.00'))
         self.assertEqual(fila['cuota_siguiente_numero'], 2)
         pendiente_cuota_2 = cuota_2.total_programado - (
             Decimal(pagos[1].capital) + Decimal(pagos[1].interes)
         )
         self.assertEqual(Decimal(fila['cuota_siguiente_monto']), pendiente_cuota_2)
-        self.assertEqual(Decimal(pagos.last().saldo), Decimal('11000.00'))
+        self.assertEqual(Decimal(pagos.last().saldo), Decimal('9500.00'))
 
     def test_pago_parcial_queda_saldo_en_misma_cuota_sin_interes_adicional(self):
         """Si el cliente paga menos que la cuota, se registra el abono y la cuota sigue abierta."""
@@ -453,7 +453,7 @@ class RolePermissionIntegrationTestCase(APITestCase):
             'id_usuario': usuario_operativo.id_usuario,
             'id_cartera': cartera.id_cartera,
             'monto': '5000.00',
-            'plazo': 3,
+            'plazo': 6,
             'tasa_interes': '10.00',
             'estado': 'activo',
             'forma_pago': 'semanal',
@@ -465,6 +465,7 @@ class RolePermissionIntegrationTestCase(APITestCase):
         self.assertEqual(response_prestamo.status_code, status.HTTP_201_CREATED)
         prestamo = Prestamo.objects.get(numero_prestamo='PRE-PAR-001')
         cuota_1 = PrestamoCuota.objects.get(id_prestamo=prestamo, numero_cuota=1)
+        self.assertEqual(cuota_1.interes_programado, Decimal('250.00'))
         abono_parcial = Decimal('500.00')
 
         payload_pago = {
@@ -862,7 +863,7 @@ class RolePermissionIntegrationTestCase(APITestCase):
             'id_usuario': usuario_operativo.id_usuario,
             'id_cartera': cartera.id_cartera,
             'monto': '8000.00',
-            'plazo': 1,
+            'plazo': 4,
             'tasa_interes': '10.00',
             'estado': 'activo',
             'forma_pago': 'semanal',
@@ -879,8 +880,8 @@ class RolePermissionIntegrationTestCase(APITestCase):
         for cuota in cuotas:
             self.assertEqual(cuota.fecha_programada.weekday(), 0)
 
-    def test_crear_prestamo_semanal_aplica_interes_plano_nominal_dividida_entre_cuatro(self):
-        """En semanal usa tasa mensual/4 e interés plano fijo sobre monto original."""
+    def test_crear_prestamo_semanal_aplica_tasa_negocio_por_semanas(self):
+        """Semanal: 6 semanas → 2.5%; otras → 10% semanal; interés simple fijo."""
         self._auth_with_role(role='supervisor', email='plan.semanal@test.com')
         cliente = Cliente.objects.create(nombre='Cliente Plan Semanal', dni='0801-2000-00014')
         cartera = Cartera.objects.create(nombre='Cartera Plan Semanal', dia_cobro='miercoles')
@@ -891,8 +892,8 @@ class RolePermissionIntegrationTestCase(APITestCase):
             'id_usuario': usuario_operativo.id_usuario,
             'id_cartera': cartera.id_cartera,
             'monto': '12000.00',
-            'plazo': 4,
-            'tasa_interes': '10.00',
+            'plazo': 6,
+            'tasa_interes': '99.00',
             'estado': 'activo',
             'forma_pago': 'semanal',
             'forma_desembolso': 'efectivo',
@@ -904,13 +905,14 @@ class RolePermissionIntegrationTestCase(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
 
         prestamo = Prestamo.objects.get(numero_prestamo='PRE-AUTO-SEM-001')
+        self.assertEqual(prestamo.tasa_interes, Decimal('2.50'))
         cuota_1 = PrestamoCuota.objects.get(id_prestamo=prestamo, numero_cuota=1)
         cuota_2 = PrestamoCuota.objects.get(id_prestamo=prestamo, numero_cuota=2)
-        # 4 meses semanales => 16 cuotas. 10% mensual -> 2.5% semanal; 12000 * 2.5% = 300 fijo.
+        # 6 semanas => 2.5% semanal; 12000 * 2.5% = 300 fijo.
         self.assertEqual(cuota_1.interes_programado, Decimal('300.00'))
         self.assertEqual(cuota_2.interes_programado, cuota_1.interes_programado)
-        self.assertEqual(cuota_1.capital_programado, Decimal('750.00'))
-        self.assertEqual(cuota_1.total_programado, Decimal('1050.00'))
+        self.assertEqual(cuota_1.capital_programado, Decimal('2000.00'))
+        self.assertEqual(cuota_1.total_programado, Decimal('2300.00'))
 
     def test_supervisor_puede_crear_cuota_planificada(self):
         """Permite al supervisor crear una cuota planificada manualmente."""
