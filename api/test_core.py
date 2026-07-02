@@ -17,9 +17,13 @@ from api.core.money import round_money
 from api.core.prestamo_calc import (
     annual_rate_from_nominal,
     frecuencia_anual,
+    interes_total_pct_semanal,
     periodic_rate_from_nominal,
+    periodos_desde_plazo,
     periods_from_months,
     plan_totales_desde_condiciones,
+    tasa_periodica_para_calculo,
+    tasa_semanal_negocio,
 )
 from api.core.reporte_saldos import saldo_pendiente_desde_plan, total_compromiso_desde_plan
 from api.core.distribucion_pago import (
@@ -60,8 +64,9 @@ class CoreMoneyTestCase(SimpleTestCase):
 class CorePrestamoCalcTestCase(SimpleTestCase):
     """Tasas y periodos de préstamo."""
 
-    def test_periods_semanal_12_meses(self):
-        self.assertEqual(periods_from_months(12, 'semanal'), 48)
+    def test_periods_semanal_12_semanas(self):
+        self.assertEqual(periodos_desde_plazo(12, 'semanal'), 12)
+        self.assertEqual(periods_from_months(12, 'semanal'), 12)
 
     def test_periods_quincenal_12_meses(self):
         self.assertEqual(periods_from_months(12, 'quincenal'), 24)
@@ -69,10 +74,27 @@ class CorePrestamoCalcTestCase(SimpleTestCase):
     def test_periods_mensual_12_meses(self):
         self.assertEqual(periods_from_months(12, 'mensual'), 12)
 
-    def test_periodic_rate_semanal(self):
+    def test_tasa_semanal_negocio(self):
+        self.assertEqual(tasa_semanal_negocio(6), Decimal('2.5'))
+        self.assertEqual(tasa_semanal_negocio(8), Decimal('2.5'))
+        self.assertEqual(tasa_semanal_negocio(10), Decimal('2.5'))
+        self.assertEqual(tasa_semanal_negocio(16), Decimal('2.5'))
+        self.assertEqual(tasa_semanal_negocio(4), Decimal('10'))
+        self.assertEqual(interes_total_pct_semanal(6), Decimal('15'))
+        self.assertEqual(interes_total_pct_semanal(8), Decimal('20'))
+        self.assertEqual(interes_total_pct_semanal(10), Decimal('25'))
+        self.assertEqual(interes_total_pct_semanal(16), Decimal('40'))
+
+    def test_tasa_periodica_semanal_6_semanas(self):
         self.assertEqual(
-            periodic_rate_from_nominal(Decimal('12.00'), 'semanal'),
-            Decimal('3.00'),
+            tasa_periodica_para_calculo(Decimal('99.00'), 'semanal', 6),
+            Decimal('2.5'),
+        )
+
+    def test_periodic_rate_quincenal(self):
+        self.assertEqual(
+            periodic_rate_from_nominal(Decimal('12.00'), 'quincenal'),
+            Decimal('6.00'),
         )
 
     def test_frecuencia_anual(self):
@@ -159,7 +181,7 @@ class CoreReporteSaldosTestCase(SimpleTestCase):
             'semanal',
             Decimal('10.00'),
         )
-        self.assertEqual(primera, Decimal('1083.33'))
+        self.assertEqual(primera, Decimal('4333.33'))
         self.assertEqual(total, Decimal('13000.00'))
 
     def test_saldo_pendiente_resta_cuotas_pagadas(self):

@@ -18,7 +18,11 @@ from .core.distribucion_pago import (
 )
 from .core.fechas import calculate_fecha_cuota, calculate_fecha_vencimiento
 from .core.money import round_money
-from .core.prestamo_calc import periodic_rate_from_nominal, periods_from_months
+from .core.prestamo_calc import (
+    periodos_desde_plazo,
+    tasa_periodica_para_calculo,
+    tasa_semanal_negocio,
+)
 from .models import (
     Cartera,
     Cliente,
@@ -467,6 +471,8 @@ class PrestamoSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError('El plazo debe ser mayor a cero.')
         if comision is not None and comision < 0:
             raise serializers.ValidationError('La comision no puede ser negativa.')
+        if instance is None and forma_pago == 'semanal' and plazo is not None:
+            attrs['tasa_interes'] = tasa_semanal_negocio(int(plazo))
         if fecha_entrega is not None and plazo is not None and forma_pago is not None:
             cartera = attrs.get('id_cartera', getattr(instance, 'id_cartera', None))
             cliente = _resolver_cliente_en_attrs(attrs, instance)
@@ -497,10 +503,14 @@ class PrestamoSerializer(serializers.ModelSerializer):
         prestamo = super().create(validated_data)
 
         monto = Decimal(prestamo.monto)
-        plazo_meses = int(prestamo.plazo)
-        periodos = periods_from_months(plazo_meses, prestamo.forma_pago)
+        plazo = int(prestamo.plazo)
+        periodos = periodos_desde_plazo(plazo, prestamo.forma_pago)
         tasa_nominal_pct = Decimal(prestamo.tasa_interes)
-        tasa_periodica = periodic_rate_from_nominal(tasa_nominal_pct, prestamo.forma_pago) / Decimal('100')
+        tasa_periodica = tasa_periodica_para_calculo(
+            tasa_nominal_pct,
+            prestamo.forma_pago,
+            plazo,
+        ) / Decimal('100')
         capital_fijo = round_money(monto / Decimal(periodos))
         interes_fijo = round_money(monto * tasa_periodica)
         cuota_periodica = round_money(capital_fijo + interes_fijo)
