@@ -98,6 +98,7 @@ def recolectar_datos_estado_cuenta(prestamo: Prestamo) -> dict:
                 'saldo_capital': str(round_money(cuota.saldo_capital_programado)),
                 'estado': 'Pagada' if pago else 'Pendiente',
                 'fecha_pago': pago.fecha_pago.isoformat() if pago else '',
+                'fecha_cancelo': pago.fecha_pago.isoformat() if pago else '',
                 'hora_pago': formato_hora_hn(cobrado_en_efectivo(pago)) if pago else '',
                 'documento': (pago.documento or f'Cuota {cuota.numero_cuota}') if pago else '',
             }
@@ -213,7 +214,9 @@ def exportar_estado_cuenta_pdf(datos: dict) -> bytes:
     )
 
     story.append(Paragraph('Plan de cuotas', section_style))
-    table_data = [['N°', 'Fecha prog.', 'Cuota', 'Saldo cap.', 'Estado', 'Fecha pago', 'Hora pago']]
+    table_data = [
+        ['N°', 'Fecha programada', 'Cuota', 'Saldo cap.', 'Estado', 'Fecha canceló', 'Hora'],
+    ]
     for fila in datos.get('cuotas', []):
         table_data.append(
             [
@@ -222,7 +225,7 @@ def exportar_estado_cuenta_pdf(datos: dict) -> bytes:
                 _money_pdf(fila.get('total_programado', '0')),
                 _money_pdf(fila.get('saldo_capital', '0')),
                 fila.get('estado', ''),
-                _format_fecha(fila.get('fecha_pago') or None),
+                _format_fecha(fila.get('fecha_cancelo') or fila.get('fecha_pago') or None),
                 fila.get('hora_pago') or '—',
             ]
         )

@@ -35,7 +35,8 @@ MESES_ES = (
 )
 
 COLUMNAS_EXCEL = (
-    ('fecha_pago', 'Fecha'),
+    ('fecha_programada', 'Fecha programada'),
+    ('fecha_pago', 'Fecha canceló'),
     ('hora_pago', 'Hora'),
     ('nombre_cliente', 'Cliente'),
     ('dni_cliente', 'DNI'),
@@ -105,13 +106,17 @@ def exportar_historial_pagos_xlsx(datos: dict) -> bytes:
         cell.font = header_font
 
     for fila in datos.get('filas', []):
-        ws.append([fila.get(key, '') for key, _ in COLUMNAS_EXCEL])
+        ws.append([
+            fila.get(key, '') or ('—' if key == 'fecha_programada' else '')
+            for key, _ in COLUMNAS_EXCEL
+        ])
 
     resumen = datos.get('resumen', {})
     ws.append([])
     ws.append(
         [
             'Totales',
+            '',
             '',
             '',
             '',
@@ -187,11 +192,24 @@ def exportar_historial_pagos_pdf(datos: dict) -> bytes:
     )
 
     table_data = [
-        ['Fecha', 'Hora', 'Cliente', 'DNI', 'Préstamo', 'Cartera', 'Doc.', 'Capital', 'Interés', 'Total'],
+        [
+            'F. programada',
+            'F. canceló',
+            'Hora',
+            'Cliente',
+            'DNI',
+            'Préstamo',
+            'Cartera',
+            'Doc.',
+            'Capital',
+            'Interés',
+            'Total',
+        ],
     ]
     for fila in datos.get('filas', []):
         table_data.append(
             [
+                fila.get('fecha_programada') or '—',
                 fila.get('fecha_pago', ''),
                 fila.get('hora_pago', ''),
                 fila.get('nombre_cliente', ''),
@@ -214,6 +232,7 @@ def exportar_historial_pagos_pdf(datos: dict) -> bytes:
             '',
             '',
             '',
+            '',
             f"{resumen.get('registros', 0)} reg.",
             _money_pdf(resumen.get('total_capital', '0')),
             _money_pdf(resumen.get('total_interes', '0')),
@@ -221,7 +240,19 @@ def exportar_historial_pagos_pdf(datos: dict) -> bytes:
         ]
     )
 
-    col_widths = [22 * mm, 18 * mm, 36 * mm, 24 * mm, 26 * mm, 28 * mm, 22 * mm, 22 * mm, 22 * mm, 24 * mm]
+    col_widths = [
+        20 * mm,
+        20 * mm,
+        16 * mm,
+        32 * mm,
+        22 * mm,
+        24 * mm,
+        24 * mm,
+        20 * mm,
+        20 * mm,
+        20 * mm,
+        22 * mm,
+    ]
     table = Table(table_data, colWidths=col_widths, repeatRows=1)
     table.setStyle(
         TableStyle(

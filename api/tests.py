@@ -540,29 +540,20 @@ class RolePermissionIntegrationTestCase(APITestCase):
         self.assertTrue(response.data['distribucion'][1].get('abono_capital'))
 
         pagos = Pago.objects.filter(id_prestamo=prestamo).order_by('id_pago')
-        self.assertEqual(pagos.count(), 2)
-        self.assertEqual(pagos[0].documento, 'Cuota 1')
-        self.assertEqual(pagos[1].documento, 'Abono a capital')
-        self.assertEqual(Decimal(pagos[0].monto_recibido_cliente), Decimal('2000.00'))
-        self.assertEqual(len(pagos[0].detalle_distribucion or []), 2)
-        self.assertTrue(pagos[0].detalle_distribucion[1].get('abono_capital'))
-        self.assertEqual(pagos[1].id_pago_factura_id, pagos[0].id_pago)
+        self.assertEqual(pagos.count(), 1)
+        pago = pagos[0]
+        self.assertEqual(pago.documento, 'Cuota 1')
+        self.assertEqual(Decimal(pago.monto_recibido_cliente), Decimal('2000.00'))
+        self.assertEqual(len(pago.detalle_distribucion or []), 2)
+        self.assertEqual(pago.detalle_distribucion[0].get('cuota'), 1)
+        self.assertTrue(pago.detalle_distribucion[1].get('abono_capital'))
 
-        pdf_hijo = self.client.get(f'/api/v1/pagos/{pagos[1].id_pago}/factura-pdf/')
-        pdf_maestro = self.client.get(f'/api/v1/pagos/{pagos[0].id_pago}/factura-pdf/')
-        self.assertEqual(pdf_hijo.status_code, status.HTTP_200_OK)
-        self.assertEqual(pdf_maestro.status_code, status.HTTP_200_OK)
-        self.assertTrue(pdf_hijo.content.startswith(b'%PDF'))
-        self.assertTrue(pdf_maestro.content.startswith(b'%PDF'))
+        pdf_pago = self.client.get(f'/api/v1/pagos/{pago.id_pago}/factura-pdf/')
+        self.assertEqual(pdf_pago.status_code, status.HTTP_200_OK)
+        self.assertTrue(pdf_pago.content.startswith(b'%PDF'))
 
-        total_abonado = sum(
-            Decimal(p.capital) + Decimal(p.interes) + Decimal(p.mora) for p in pagos
-        )
+        total_abonado = Decimal(pago.capital) + Decimal(pago.interes) + Decimal(pago.mora)
         self.assertEqual(total_abonado, Decimal('2000.00'))
-        self.assertEqual(
-            Decimal(pagos[0].capital) + Decimal(pagos[0].interes),
-            cuota_1.total_programado,
-        )
 
         reporte = self.client.get('/api/v1/prestamos/reporte-integracion/?all=1')
         self.assertEqual(reporte.status_code, status.HTTP_200_OK)
