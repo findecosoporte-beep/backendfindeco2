@@ -285,16 +285,19 @@ def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
         dibujar_linea_detalle(producto_label, total_venta)
     else:
         for item in lineas_detalle:
-            cuota_n = item.get('cuota', '')
-            es_parcial = bool(item.get('parcial'))
-            total_cuota = round_money(Decimal(str(item.get('total', '0'))))
-            mora_cuota = round_money(Decimal(str(item.get('mora', '0'))))
-            if mora_cuota > 0:
-                producto_label = f'CUOTA #{cuota_n} MORA'
-            elif es_parcial:
-                producto_label = f'CUOTA #{cuota_n} PARCIAL'
+            if item.get('abono_capital'):
+                producto_label = 'ABONO A CAPITAL'
             else:
-                producto_label = f'CUOTA #{cuota_n}'
+                cuota_n = item.get('cuota', '')
+                es_parcial = bool(item.get('parcial'))
+                mora_cuota = round_money(Decimal(str(item.get('mora', '0'))))
+                if mora_cuota > 0:
+                    producto_label = f'CUOTA #{cuota_n} MORA'
+                elif es_parcial:
+                    producto_label = f'CUOTA #{cuota_n} PARCIAL'
+                else:
+                    producto_label = f'CUOTA #{cuota_n}'
+            total_cuota = round_money(Decimal(str(item.get('total', '0'))))
             dibujar_linea_detalle(producto_label, total_cuota)
     line()
 

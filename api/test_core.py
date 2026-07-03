@@ -28,6 +28,7 @@ from api.core.prestamo_calc import (
 from api.core.reporte_saldos import saldo_pendiente_desde_plan, total_compromiso_desde_plan
 from api.core.distribucion_pago import (
     abonado_por_cuota_desde_pagos,
+    distribuir_cobro_con_excedente_a_capital,
     distribuir_monto_en_cuotas,
     pendiente_cuota,
     saldo_pendiente_con_abonos,
@@ -217,6 +218,19 @@ class CoreDistribucionPagoTestCase(SimpleTestCase):
             self.otros_programado = Decimal('0')
             saldo = saldo_capital if saldo_capital is not None else '0'
             self.saldo_capital_programado = Decimal(saldo)
+
+    def test_distribuir_excedente_abono_capital(self):
+        plan = [
+            self.Cuota(1, '833.33', '250.00', total='1083.33', saldo_capital='9166.67'),
+            self.Cuota(2, '833.33', '250.00', total='1083.33', saldo_capital='8333.34'),
+            self.Cuota(3, '833.34', '250.00', total='1083.34', saldo_capital='7500.00'),
+        ]
+        lineas = distribuir_cobro_con_excedente_a_capital(plan, 1, Decimal('2000.00'), Decimal('0.00'), {})
+        self.assertEqual(len(lineas), 2)
+        self.assertEqual(lineas[0]['numero_cuota'], 1)
+        self.assertTrue(lineas[1].get('abono_capital'))
+        self.assertEqual(lineas[0]['capital'] + lineas[0]['interes'], Decimal('1083.33'))
+        self.assertEqual(lineas[1]['capital'], Decimal('916.67'))
 
     def test_distribuir_excedente_dos_cuotas(self):
         plan = [

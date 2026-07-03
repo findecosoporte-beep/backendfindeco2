@@ -15,7 +15,7 @@ from .core.distribucion_pago import (
     CUOTA_PAGADA_TOLERANCIA,
     abonado_por_cuota_desde_pagos,
     cuota_esta_pagada,
-    distribuir_monto_en_cuotas,
+    distribuir_cobro_con_excedente_a_capital,
     pendiente_cuota,
     saldo_pendiente_tras_abono,
 )
@@ -754,7 +754,7 @@ class PagoSerializer(serializers.ModelSerializer):
                 debe_distribuir = True
 
         if debe_distribuir:
-            lineas = distribuir_monto_en_cuotas(
+            lineas = distribuir_cobro_con_excedente_a_capital(
                 plan_rows,
                 cuota_numero,
                 monto_distribuir,
@@ -764,33 +764,27 @@ class PagoSerializer(serializers.ModelSerializer):
             if lineas:
                 pagos_creados: list[Pago] = []
                 fecha_pago = validated_data['fecha_pago']
-                self.distribucion_resumen = [
-                    {
-                        'cuota': linea['numero_cuota'],
+
+                def _linea_distribucion_resumen(linea: dict) -> dict:
+                    total = round_money(linea['capital'] + linea['interes'] + linea['mora'])
+                    item: dict = {
                         'capital': str(linea['capital']),
                         'interes': str(linea['interes']),
                         'mora': str(linea['mora']),
-                        'total': str(
-                            round_money(linea['capital'] + linea['interes'] + linea['mora'])
-                        ),
+                        'total': str(total),
                     }
-                    for linea in lineas
-                ]
+                    if linea.get('abono_capital'):
+                        item['abono_capital'] = True
+                    else:
+                        item['cuota'] = linea['numero_cuota']
+                    if linea.get('parcial'):
+                        item['parcial'] = True
+                    return item
+
+                self.distribucion_resumen = [_linea_distribucion_resumen(linea) for linea in lineas]
                 detalle_factura = None
                 if monto_recibido_cliente is not None:
                     detalle_factura = [dict(item) for item in self.distribucion_resumen]
-                    if (
-                        len(lineas) == 1
-                        and cuota_numero is not None
-                        and fila_inicio is not None
-                    ):
-                        pendiente_antes = pendiente_cuota(
-                            fila_inicio,
-                            abonado_previo.get(cuota_numero, Decimal('0.00')),
-                        )
-                        cobrado_cuota = round_money(monto_distribuir + mora)
-                        if cobrado_cuota < pendiente_antes - CUOTA_PAGADA_TOLERANCIA:
-                            detalle_factura[0]['parcial'] = True
                 pago_maestro: Pago | None = None
                 for idx, linea in enumerate(lineas):
                     create_kwargs = {

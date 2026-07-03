@@ -496,8 +496,8 @@ class RolePermissionIntegrationTestCase(APITestCase):
         response = self.client.post('/api/v1/pagos/', data=payload_duplicado, format='json')
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
-    def test_pago_excedente_distribuye_en_siguientes_cuotas(self):
-        """Si el cliente paga de más, se cierra la cuota actual y el resto abona a la siguiente."""
+    def test_pago_excedente_abona_resto_a_capital(self):
+        """Si el cliente paga de más, se cierra la cuota actual y el resto va a capital."""
         self._auth_with_role(role='supervisor', email='excedente.cuota@test.com')
         cliente = Cliente.objects.create(nombre='Cliente Excedente', dni='0801-2000-00016')
         cartera = Cartera.objects.create(nombre='Cartera Excedente', dia_cobro='lunes')
@@ -537,14 +537,15 @@ class RolePermissionIntegrationTestCase(APITestCase):
         self.assertIn('distribucion', response.data)
         self.assertEqual(len(response.data['distribucion']), 2)
         self.assertEqual(response.data['distribucion'][0]['cuota'], 1)
-        self.assertEqual(response.data['distribucion'][1]['cuota'], 2)
+        self.assertTrue(response.data['distribucion'][1].get('abono_capital'))
 
         pagos = Pago.objects.filter(id_prestamo=prestamo).order_by('id_pago')
         self.assertEqual(pagos.count(), 2)
         self.assertEqual(pagos[0].documento, 'Cuota 1')
-        self.assertEqual(pagos[1].documento, 'Cuota 2')
+        self.assertEqual(pagos[1].documento, 'Abono a capital')
         self.assertEqual(Decimal(pagos[0].monto_recibido_cliente), Decimal('2000.00'))
         self.assertEqual(len(pagos[0].detalle_distribucion or []), 2)
+        self.assertTrue(pagos[0].detalle_distribucion[1].get('abono_capital'))
         self.assertEqual(pagos[1].id_pago_factura_id, pagos[0].id_pago)
 
         pdf_hijo = self.client.get(f'/api/v1/pagos/{pagos[1].id_pago}/factura-pdf/')
@@ -571,10 +572,7 @@ class RolePermissionIntegrationTestCase(APITestCase):
         self.assertEqual(Decimal(fila['saldo_inicial']), Decimal('11500.00'))
         self.assertEqual(Decimal(fila['saldo_actual']), Decimal('9500.00'))
         self.assertEqual(fila['cuota_siguiente_numero'], 2)
-        pendiente_cuota_2 = cuota_2.total_programado - (
-            Decimal(pagos[1].capital) + Decimal(pagos[1].interes)
-        )
-        self.assertEqual(Decimal(fila['cuota_siguiente_monto']), pendiente_cuota_2)
+        self.assertEqual(Decimal(fila['cuota_siguiente_monto']), cuota_2.total_programado)
         self.assertEqual(Decimal(pagos.last().saldo), Decimal('9500.00'))
 
     def test_pago_parcial_queda_saldo_en_misma_cuota_sin_interes_adicional(self):
