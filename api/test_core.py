@@ -79,8 +79,12 @@ class CorePrestamoCalcTestCase(SimpleTestCase):
         self.assertEqual(tasa_semanal_negocio(6), Decimal('2.5'))
         self.assertEqual(tasa_semanal_negocio(8), Decimal('2.5'))
         self.assertEqual(tasa_semanal_negocio(10), Decimal('2.5'))
+        self.assertEqual(tasa_semanal_negocio(12), Decimal('2.5'))
         self.assertEqual(tasa_semanal_negocio(16), Decimal('2.5'))
         self.assertEqual(tasa_semanal_negocio(4), Decimal('10'))
+
+    def test_interes_total_pct_semanal_12_semanas_es_30_por_ciento(self):
+        self.assertEqual(interes_total_pct_semanal(12), Decimal('30.0'))
         self.assertEqual(interes_total_pct_semanal(6), Decimal('15'))
         self.assertEqual(interes_total_pct_semanal(8), Decimal('20'))
         self.assertEqual(interes_total_pct_semanal(10), Decimal('25'))
