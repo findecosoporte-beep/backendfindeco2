@@ -294,7 +294,7 @@ def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
                 if mora_cuota > 0:
                     producto_label = f'CUOTA #{cuota_n} MORA'
                 elif es_parcial:
-                    producto_label = f'CUOTA #{cuota_n} PARCIAL'
+                    producto_label = 'ABONO PARCIAL'
                 else:
                     producto_label = f'CUOTA #{cuota_n}'
             total_cuota = round_money(Decimal(str(item.get('total', '0'))))
@@ -333,7 +333,19 @@ def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
     y -= 5.5 * mm
     if es_abono_parcial:
         pdf.setFont('Helvetica', detail_size)
-        pdf.drawString(producto_x, y, 'Abono parcial a la cuota')
+        cuotas_parciales = [
+            item.get('cuota')
+            for item in lineas_detalle
+            if isinstance(item, dict) and item.get('parcial') and item.get('cuota') is not None
+        ]
+        if cuotas_parciales:
+            pdf.drawString(
+                producto_x,
+                y,
+                f'Abono parcial a cuota #{cuotas_parciales[0]}',
+            )
+        else:
+            pdf.drawString(producto_x, y, 'Abono parcial a la cuota')
         y -= 4.2 * mm
     line()
 
