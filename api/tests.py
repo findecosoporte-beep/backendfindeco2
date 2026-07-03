@@ -73,6 +73,49 @@ class PrestamoSerializerTestCase(TestCase):
         serializer = PrestamoSerializer(data=self._build_payload())
         self.assertTrue(serializer.is_valid(), serializer.errors)
 
+    def test_rechaza_segundo_prestamo_activo_mismo_cliente(self):
+        Prestamo.objects.create(
+            numero_prestamo='PRE-ACTIVO',
+            id_cliente=self.cliente,
+            id_usuario=self.usuario,
+            id_cartera=self.cartera,
+            monto=Decimal('1000.00'),
+            plazo=6,
+            tasa_interes=Decimal('10.00'),
+            estado='activo',
+            forma_pago='semanal',
+            forma_desembolso='efectivo',
+            comision=Decimal('0.00'),
+            fecha_entrega=date.today(),
+            fecha_vencimiento=date.today() + timedelta(days=60),
+        )
+        serializer = PrestamoSerializer(data=self._build_payload(numero_prestamo='PRE-002'))
+        self.assertFalse(serializer.is_valid())
+        self.assertIn('id_cliente', serializer.errors)
+
+    def test_acepta_renovacion_si_anterior_esta_pagado(self):
+        Prestamo.objects.create(
+            numero_prestamo='PRE-PAGADO',
+            id_cliente=self.cliente,
+            id_usuario=self.usuario,
+            id_cartera=self.cartera,
+            monto=Decimal('1000.00'),
+            plazo=6,
+            tasa_interes=Decimal('10.00'),
+            estado='pagado',
+            forma_pago='semanal',
+            forma_desembolso='efectivo',
+            comision=Decimal('0.00'),
+            ciclos=0,
+            fecha_entrega=date.today() - timedelta(days=90),
+            fecha_vencimiento=date.today() - timedelta(days=30),
+        )
+        serializer = PrestamoSerializer(data=self._build_payload(numero_prestamo='PRE-REN-001'))
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        prestamo = serializer.save()
+        self.assertEqual(prestamo.ciclos, 1)
+        self.assertEqual(prestamo.numero_prestamo, 'PRE-REN-001')
+
 
 class RolePermissionIntegrationTestCase(APITestCase):
     """Pruebas de integracion para permisos por rol en endpoints DRF."""
@@ -273,6 +316,89 @@ class RolePermissionIntegrationTestCase(APITestCase):
         self.assertEqual(response_80['Content-Type'], 'application/pdf')
         self.assertIn('80mm', response_80['Content-Disposition'])
 
+    def test_factura_pdf_refleja_monto_recibido_cliente(self):
+        """La factura se genera con el efectivo entregado (parcial o excedente)."""
+        self._auth_with_role(role='supervisor', email='pdf.recibido@test.com')
+        cliente = Cliente.objects.create(nombre='Cliente Recibido', dni='0801-2000-00030')
+        cartera = Cartera.objects.create(nombre='Cartera Recibido', dia_cobro='lunes')
+        usuario_operativo = Usuario.objects.get(correo='pdf.recibido@test.com')
+        payload_prestamo = {
+            'numero_prestamo': 'PRE-REC-001',
+            'id_cliente': cliente.id_cliente,
+            'id_usuario': usuario_operativo.id_usuario,
+            'id_cartera': cartera.id_cartera,
+            'monto': '5000.00',
+            'plazo': 6,
+            'tasa_interes': '10.00',
+            'estado': 'activo',
+            'forma_pago': 'semanal',
+            'forma_desembolso': 'efectivo',
+            'comision': '0.00',
+            'fecha_entrega': date(2026, 6, 21).isoformat(),
+        }
+        self.client.post('/api/v1/prestamos/', data=payload_prestamo, format='json')
+        prestamo = Prestamo.objects.get(numero_prestamo='PRE-REC-001')
+        cuota_1 = PrestamoCuota.objects.get(id_prestamo=prestamo, numero_cuota=1)
+
+        payload_pago = {
+            'id_prestamo': prestamo.id_prestamo,
+            'fecha_pago': date.today().isoformat(),
+            'documento': 'Cuota 1',
+            'capital': str(cuota_1.capital_programado),
+            'interes': str(cuota_1.interes_programado),
+            'mora': '0.00',
+            'saldo': '0.00',
+            'monto_recibido': '2500.00',
+        }
+        response = self.client.post('/api/v1/pagos/', data=payload_pago, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        pago = Pago.objects.filter(id_prestamo=prestamo).order_by('id_pago').first()
+        self.assertEqual(Decimal(pago.monto_recibido_cliente), Decimal('2500.00'))
+
+        pdf_response = self.client.get(f'/api/v1/pagos/{pago.id_pago}/factura-pdf/')
+        self.assertEqual(pdf_response.status_code, status.HTTP_200_OK)
+        self.assertTrue(pdf_response.content.startswith(b'%PDF'))
+
+    def test_cobrado_en_se_guarda_al_crear_pago(self):
+        """Al registrar un cobro se persiste cobrado_en (fecha y hora del evento)."""
+        self._auth_with_role(role='supervisor', email='cobrado.en@test.com')
+        cliente = Cliente.objects.create(nombre='Cliente Cobrado', dni='0801-2000-00031')
+        cartera = Cartera.objects.create(nombre='Cartera Cobrado', dia_cobro='martes')
+        usuario_operativo = Usuario.objects.get(correo='cobrado.en@test.com')
+        payload_prestamo = {
+            'numero_prestamo': 'PRE-COB-001',
+            'id_cliente': cliente.id_cliente,
+            'id_usuario': usuario_operativo.id_usuario,
+            'id_cartera': cartera.id_cartera,
+            'monto': '2000.00',
+            'plazo': 2,
+            'tasa_interes': '10.00',
+            'estado': 'activo',
+            'forma_pago': 'mensual',
+            'forma_desembolso': 'efectivo',
+            'comision': '0.00',
+            'fecha_entrega': date.today().isoformat(),
+        }
+        self.client.post('/api/v1/prestamos/', data=payload_prestamo, format='json')
+        prestamo = Prestamo.objects.get(numero_prestamo='PRE-COB-001')
+        cuota_1 = PrestamoCuota.objects.get(id_prestamo=prestamo, numero_cuota=1)
+        payload_pago = {
+            'id_prestamo': prestamo.id_prestamo,
+            'fecha_pago': date.today().isoformat(),
+            'documento': 'Cuota 1',
+            'capital': str(cuota_1.capital_programado),
+            'interes': str(cuota_1.interes_programado),
+            'mora': '0.00',
+            'saldo': '0.00',
+            'monto_recibido': str(cuota_1.total_programado),
+        }
+        response = self.client.post('/api/v1/pagos/', data=payload_pago, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertIn('cobrado_en', response.data)
+        self.assertIsNotNone(response.data['cobrado_en'])
+        pago = Pago.objects.get(pk=response.data['id_pago'])
+        self.assertIsNotNone(pago.cobrado_en)
+
     def test_estado_cuenta_pdf_prestamo_retorna_pdf(self):
         self._auth_with_role(role='supervisor', email='pdf.estado@test.com')
         cliente = Cliente.objects.create(
@@ -370,8 +496,8 @@ class RolePermissionIntegrationTestCase(APITestCase):
         response = self.client.post('/api/v1/pagos/', data=payload_duplicado, format='json')
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
-    def test_pago_excedente_distribuye_en_siguientes_cuotas(self):
-        """Si el cliente paga de más, se cierra la cuota actual y el resto abona a la siguiente."""
+    def test_pago_excedente_abona_resto_a_capital(self):
+        """Si el cliente paga de más, se cierra la cuota actual y el resto va a capital."""
         self._auth_with_role(role='supervisor', email='excedente.cuota@test.com')
         cliente = Cliente.objects.create(nombre='Cliente Excedente', dni='0801-2000-00016')
         cartera = Cartera.objects.create(nombre='Cartera Excedente', dia_cobro='lunes')
@@ -411,12 +537,23 @@ class RolePermissionIntegrationTestCase(APITestCase):
         self.assertIn('distribucion', response.data)
         self.assertEqual(len(response.data['distribucion']), 2)
         self.assertEqual(response.data['distribucion'][0]['cuota'], 1)
-        self.assertEqual(response.data['distribucion'][1]['cuota'], 2)
+        self.assertTrue(response.data['distribucion'][1].get('abono_capital'))
 
         pagos = Pago.objects.filter(id_prestamo=prestamo).order_by('id_pago')
         self.assertEqual(pagos.count(), 2)
         self.assertEqual(pagos[0].documento, 'Cuota 1')
-        self.assertEqual(pagos[1].documento, 'Cuota 2')
+        self.assertEqual(pagos[1].documento, 'Abono a capital')
+        self.assertEqual(Decimal(pagos[0].monto_recibido_cliente), Decimal('2000.00'))
+        self.assertEqual(len(pagos[0].detalle_distribucion or []), 2)
+        self.assertTrue(pagos[0].detalle_distribucion[1].get('abono_capital'))
+        self.assertEqual(pagos[1].id_pago_factura_id, pagos[0].id_pago)
+
+        pdf_hijo = self.client.get(f'/api/v1/pagos/{pagos[1].id_pago}/factura-pdf/')
+        pdf_maestro = self.client.get(f'/api/v1/pagos/{pagos[0].id_pago}/factura-pdf/')
+        self.assertEqual(pdf_hijo.status_code, status.HTTP_200_OK)
+        self.assertEqual(pdf_maestro.status_code, status.HTTP_200_OK)
+        self.assertTrue(pdf_hijo.content.startswith(b'%PDF'))
+        self.assertTrue(pdf_maestro.content.startswith(b'%PDF'))
 
         total_abonado = sum(
             Decimal(p.capital) + Decimal(p.interes) + Decimal(p.mora) for p in pagos
@@ -435,10 +572,7 @@ class RolePermissionIntegrationTestCase(APITestCase):
         self.assertEqual(Decimal(fila['saldo_inicial']), Decimal('11500.00'))
         self.assertEqual(Decimal(fila['saldo_actual']), Decimal('9500.00'))
         self.assertEqual(fila['cuota_siguiente_numero'], 2)
-        pendiente_cuota_2 = cuota_2.total_programado - (
-            Decimal(pagos[1].capital) + Decimal(pagos[1].interes)
-        )
-        self.assertEqual(Decimal(fila['cuota_siguiente_monto']), pendiente_cuota_2)
+        self.assertEqual(Decimal(fila['cuota_siguiente_monto']), cuota_2.total_programado)
         self.assertEqual(Decimal(pagos.last().saldo), Decimal('9500.00'))
 
     def test_pago_parcial_queda_saldo_en_misma_cuota_sin_interes_adicional(self):
@@ -465,7 +599,7 @@ class RolePermissionIntegrationTestCase(APITestCase):
         self.assertEqual(response_prestamo.status_code, status.HTTP_201_CREATED)
         prestamo = Prestamo.objects.get(numero_prestamo='PRE-PAR-001')
         cuota_1 = PrestamoCuota.objects.get(id_prestamo=prestamo, numero_cuota=1)
-        self.assertEqual(cuota_1.interes_programado, Decimal('250.00'))
+        self.assertEqual(cuota_1.interes_programado, Decimal('125.00'))
         abono_parcial = Decimal('500.00')
 
         payload_pago = {
@@ -485,6 +619,9 @@ class RolePermissionIntegrationTestCase(APITestCase):
 
         pago = Pago.objects.get(id_prestamo=prestamo)
         self.assertEqual(Decimal(pago.capital) + Decimal(pago.interes), abono_parcial)
+        self.assertEqual(Decimal(pago.monto_recibido_cliente), abono_parcial)
+        self.assertTrue(pago.detalle_distribucion)
+        self.assertTrue(pago.detalle_distribucion[0].get('parcial'))
         pendiente_cuota_1 = cuota_1.total_programado - abono_parcial
 
         reporte = self.client.get(
@@ -539,6 +676,9 @@ class RolePermissionIntegrationTestCase(APITestCase):
         self.assertEqual(response.data['resumen']['registros'], 1)
         self.assertEqual(response.data['filas'][0]['numero_prestamo'], 'PRE-HIST-001')
         self.assertEqual(response.data['filas'][0]['nombre_cliente'], 'Cliente Hist')
+        self.assertIn('generado_en', response.data)
+        self.assertIn('hora_pago', response.data['filas'][0])
+        self.assertIn('cobrado_en', response.data['filas'][0])
 
         vacio = self.client.get('/api/v1/pagos/historial-cobros/?modo=dia&fecha=2020-01-01')
         self.assertEqual(vacio.status_code, status.HTTP_200_OK)
@@ -560,6 +700,126 @@ class RolePermissionIntegrationTestCase(APITestCase):
         self.assertEqual(pdf.status_code, status.HTTP_200_OK)
         self.assertEqual(pdf['Content-Type'], 'application/pdf')
         self.assertTrue(pdf.content.startswith(b'%PDF'))
+
+    def test_supervisor_anula_cobro_y_revierte_historial(self):
+        """Anular cobro lo excluye del historial y reabre la cuota."""
+        self._auth_with_role(role='supervisor', email='anular.cobro@test.com')
+        cliente = Cliente.objects.create(nombre='Cliente Anular', dni='0801-2000-00026')
+        cartera = Cartera.objects.create(nombre='Cartera Anular', dia_cobro='lunes')
+        usuario_operativo = Usuario.objects.get(correo='anular.cobro@test.com')
+        payload_prestamo = {
+            'numero_prestamo': 'PRE-ANUL-001',
+            'id_cliente': cliente.id_cliente,
+            'id_usuario': usuario_operativo.id_usuario,
+            'id_cartera': cartera.id_cartera,
+            'monto': '3000.00',
+            'plazo': 2,
+            'tasa_interes': '10.00',
+            'estado': 'activo',
+            'forma_pago': 'mensual',
+            'forma_desembolso': 'efectivo',
+            'comision': '0.00',
+            'fecha_entrega': date(2026, 6, 21).isoformat(),
+        }
+        self.client.post('/api/v1/prestamos/', data=payload_prestamo, format='json')
+        prestamo = Prestamo.objects.get(numero_prestamo='PRE-ANUL-001')
+        cuota_1 = PrestamoCuota.objects.get(id_prestamo=prestamo, numero_cuota=1)
+        fecha_cobro = date(2026, 6, 22)
+        payload_pago = {
+            'id_prestamo': prestamo.id_prestamo,
+            'fecha_pago': fecha_cobro.isoformat(),
+            'documento': 'Cuota 1',
+            'capital': str(cuota_1.capital_programado),
+            'interes': str(cuota_1.interes_programado),
+            'mora': '0.00',
+            'saldo': '0.00',
+            'monto_recibido': str(cuota_1.total_programado),
+        }
+        pago_resp = self.client.post('/api/v1/pagos/', data=payload_pago, format='json')
+        self.assertEqual(pago_resp.status_code, status.HTTP_201_CREATED)
+        id_pago = pago_resp.data['id_pago']
+
+        hist_antes = self.client.get(
+            f'/api/v1/pagos/historial-cobros/?modo=dia&fecha={fecha_cobro.isoformat()}'
+        )
+        self.assertEqual(hist_antes.data['resumen']['registros'], 1)
+
+        anular = self.client.post(
+            f'/api/v1/pagos/{id_pago}/anular/',
+            data={'motivo': 'Cobro registrado por error'},
+            format='json',
+        )
+        self.assertEqual(anular.status_code, status.HTTP_200_OK, anular.data)
+        pago = Pago.objects.get(pk=id_pago)
+        self.assertTrue(pago.anulado)
+        self.assertEqual(pago.motivo_anulacion, 'Cobro registrado por error')
+        self.assertIsNotNone(pago.anulado_en)
+
+        hist_despues = self.client.get(
+            f'/api/v1/pagos/historial-cobros/?modo=dia&fecha={fecha_cobro.isoformat()}'
+        )
+        self.assertEqual(hist_despues.data['resumen']['registros'], 0)
+
+        reporte = self.client.get(
+            f'/api/v1/prestamos/reporte-integracion/?id_prestamo={prestamo.id_prestamo}&all=1'
+        )
+        fila = reporte.data['filas'][0]
+        self.assertEqual(fila['cuota_siguiente_numero'], 1)
+
+        pdf = self.client.get(f'/api/v1/pagos/{id_pago}/factura-pdf/')
+        self.assertEqual(pdf.status_code, status.HTTP_200_OK)
+        self.assertEqual(pdf['Content-Type'], 'application/pdf')
+
+    def test_asesor_no_puede_anular_cobro(self):
+        """Solo administrador o supervisor pueden anular."""
+        self._auth_with_role(role='supervisor', email='anular.setup@test.com')
+        cliente = Cliente.objects.create(nombre='Cliente No Anular', dni='0801-2000-00027')
+        cartera = Cartera.objects.create(nombre='Cartera No Anular', dia_cobro='lunes')
+        usuario_operativo = Usuario.objects.get(correo='anular.setup@test.com')
+        self.client.post(
+            '/api/v1/prestamos/',
+            data={
+                'numero_prestamo': 'PRE-NOANUL-001',
+                'id_cliente': cliente.id_cliente,
+                'id_usuario': usuario_operativo.id_usuario,
+                'id_cartera': cartera.id_cartera,
+                'monto': '1000.00',
+                'plazo': 1,
+                'tasa_interes': '10.00',
+                'estado': 'activo',
+                'forma_pago': 'mensual',
+                'forma_desembolso': 'efectivo',
+                'comision': '0.00',
+                'fecha_entrega': date.today().isoformat(),
+            },
+            format='json',
+        )
+        prestamo = Prestamo.objects.get(numero_prestamo='PRE-NOANUL-001')
+        cuota = PrestamoCuota.objects.get(id_prestamo=prestamo, numero_cuota=1)
+        pago_resp = self.client.post(
+            '/api/v1/pagos/',
+            data={
+                'id_prestamo': prestamo.id_prestamo,
+                'fecha_pago': date.today().isoformat(),
+                'documento': 'Cuota 1',
+                'capital': str(cuota.capital_programado),
+                'interes': str(cuota.interes_programado),
+                'mora': '0.00',
+                'saldo': '0.00',
+                'monto_recibido': str(cuota.total_programado),
+            },
+            format='json',
+        )
+        id_pago = pago_resp.data['id_pago']
+
+        self._auth_with_role(role='asesor', email='asesor.noanular@test.com')
+        resp = self.client.post(
+            f'/api/v1/pagos/{id_pago}/anular/',
+            data={'motivo': 'Intento no autorizado'},
+            format='json',
+        )
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(Pago.objects.get(pk=id_pago).anulado)
 
     def test_reporte_integracion_incluye_pendiente_aprobacion_en_filtro_cobro(self):
         """La hoja de cobros debe listar préstamos nuevos (pendiente_aprobacion), no solo activos."""

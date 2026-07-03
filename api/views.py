@@ -40,6 +40,13 @@ from .historial_pagos_export import (
     nombre_archivo_historial,
 )
 from .core.cuotas import extract_cuota_numero_from_documento
+from .core.fechas_display import (
+    ahora_local_iso,
+    cobrado_en_efectivo,
+    formato_fecha_hn,
+    formato_fecha_hora_hn,
+    formato_hora_hn,
+)
 from .core.findeco_brand import dibujar_logo_ticket
 from .core.money import round_money
 from .core.prestamo_calc import (
@@ -51,6 +58,7 @@ from .core.prestamo_calc import (
     tasa_semanal_negocio,
     plan_totales_desde_condiciones,
 )
+from .core.anulacion_pago import anular_grupo_cobro, filtrar_pagos_vigentes
 from .core.distribucion_pago import (
     abonado_por_cuota_desde_pagos,
     cuotas_pagadas_completas,
@@ -79,7 +87,7 @@ from .models import (
 )
 from .permissions import RoleBasedAccessPermission
 from .pagination import ClienteListPagination, ReporteIntegracionPagination
-from .role_policy import WRITE_ADMIN, WRITE_COBROS, WRITE_CONTRATOS, WRITE_DOCUMENTOS
+from .role_policy import WRITE_ADMIN, WRITE_ANULAR_PAGOS, WRITE_COBROS, WRITE_CONTRATOS, WRITE_DOCUMENTOS
 from .serializers import (
     CarteraSerializer,
     ClienteSerializer,
@@ -102,6 +110,64 @@ from .serializers import (
 AUTH_PERMISSION_CLASSES = (RoleBasedAccessPermission,)
 
 
+def _truncar_texto_ancho_pdf(pdf, texto: str, font: str, size: float, max_width: float) -> str:
+    """Recorta texto con elipsis si excede el ancho disponible en el PDF."""
+    if pdf.stringWidth(texto, font, size) <= max_width:
+        return texto
+    recorte = texto
+    while len(recorte) > 1 and pdf.stringWidth(f'{recorte}...', font, size) > max_width:
+        recorte = recorte[:-1]
+    return f'{recorte}...'
+
+
+def _columnas_factura_ticket(ticket_w: float, is_80mm: bool, x0: float = 0) -> dict[str, float]:
+    """Cuadrícula del detalle centrada en el ancho del ticket."""
+    margin_side = 4 * mm if is_80mm else 3.5 * mm
+    table_left = x0 + margin_side
+    table_right = x0 + ticket_w - margin_side
+    table_w = table_right - table_left
+
+    if is_80mm:
+        ratios = (0.40, 0.10, 0.24, 0.26)
+    else:
+        ratios = (0.42, 0.08, 0.25, 0.25)
+
+    w_prod, w_cant, w_prec, w_imp = (table_w * r for r in ratios)
+    cant_left = table_left + w_prod
+    cant_right = cant_left + w_cant
+    prec_left = cant_right
+    prec_right = prec_left + w_prec
+    imp_left = prec_right
+    imp_right = table_right
+    inner_pad = 0.4 * mm
+
+    return {
+        'pad': margin_side,
+        'table_left': table_left,
+        'table_right': table_right,
+        'producto_x': table_left,
+        'producto_max_w': max(cant_left - table_left - 0.6 * mm, 10 * mm),
+        'cant_center_x': (cant_left + cant_right) / 2,
+        'precio_x': prec_right - inner_pad,
+        'precio_center_x': (prec_left + prec_right) / 2,
+        'importe_x': imp_right - inner_pad,
+        'importe_center_x': (imp_left + imp_right) / 2,
+    }
+
+
+def _resolver_pago_factura(pago: Pago) -> Pago:
+    """Un solo ticket: líneas hijas reutilizan la factura del pago maestro."""
+    if pago.monto_recibido_cliente is not None:
+        return pago
+    maestro_id = getattr(pago, 'id_pago_factura_id', None)
+    if maestro_id:
+        return Pago.objects.select_related(
+            'id_prestamo',
+            'id_prestamo__id_cliente',
+        ).get(pk=maestro_id)
+    return pago
+
+
 def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
     """Genera un PDF de factura con estilo ticket (58mm u 80mm)."""
     buffer = io.BytesIO()
@@ -116,10 +182,29 @@ def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
     interes = round_money(Decimal(pago.interes))
     mora = round_money(Decimal(pago.mora))
     subtotal = round_money(capital + interes)
-    total_pagado = round_money(subtotal + mora)
+    total_aplicado = round_money(subtotal + mora)
+    efectivo_recibido = (
+        round_money(Decimal(pago.monto_recibido_cliente))
+        if pago.monto_recibido_cliente is not None
+        else None
+    )
+    total_venta = efectivo_recibido if efectivo_recibido is not None else total_aplicado
+    detalle_distribucion = pago.detalle_distribucion or []
+    es_abono_parcial = any(
+        isinstance(item, dict) and item.get('parcial') for item in detalle_distribucion
+    )
 
     x0 = 0
     y = height - 12 * mm
+    cols = _columnas_factura_ticket(ticket_w, is_80mm, x0)
+    pad = cols['pad']
+    producto_x = cols['producto_x']
+    producto_max_w = cols['producto_max_w']
+    cant_center_x = cols['cant_center_x']
+    price_x = cols['precio_x']
+    price_center_x = cols['precio_center_x']
+    importe_x = cols['importe_x']
+    importe_center_x = cols['importe_center_x']
 
     def center_text(text: str, size: int = 9, bold: bool = False, step_mm: float = 4.6) -> None:
         nonlocal y
@@ -152,53 +237,96 @@ def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
     folio_size = 9 if is_80mm else 8
     center_text('FACTURA ELECTRONICA', title_size, True)
     center_text(f'F{pago.id_pago:03d}-{pago.id_prestamo.id_prestamo:08d}', folio_size, False, 4.8)
+    if pago.anulado:
+        pdf.setFillColor(colors.HexColor('#CC0000'))
+        center_text('*** ANULADA ***', title_size, True, 5.2)
+        pdf.setFillColor(colors.black)
     line()
 
     body_size = 9 if is_80mm else 7.8
     pdf.setFont('Helvetica', body_size)
-    pdf.drawString(x0 + 1 * mm, y, f'Senor(es): {cliente.nombre}')
+    pdf.drawString(producto_x, y, f'Senor(es): {cliente.nombre}')
     y -= 5 * mm
-    pdf.drawString(x0 + 1 * mm, y, f'RUC/DNI: {cliente.dni}')
+    pdf.drawString(producto_x, y, f'RUC/DNI: {cliente.dni}')
     y -= 5 * mm
-    pdf.drawString(x0 + 1 * mm, y, f'Fecha: {pago.fecha_pago.isoformat()}')
+    momento_cobro = cobrado_en_efectivo(pago)
+    pdf.drawString(producto_x, y, f'Fecha cobro: {formato_fecha_hn(pago.fecha_pago)}')
+    y -= 5 * mm
+    pdf.drawString(producto_x, y, f'Hora registro: {formato_hora_hn(momento_cobro)}')
     y -= 3 * mm
     line()
 
-    # Encabezado de detalle tipo POS (columnas relativas al ancho del ticket).
     header_size = 8.5 if is_80mm else 7.6
-    right_margin_x = x0 + ticket_w - 1 * mm
-    importe_x = right_margin_x
-    price_x = x0 + (ticket_w * 0.78)
-    qty_x = x0 + (ticket_w * 0.62)
-    producto_x = x0 + 1 * mm
-    pdf.setFont('Helvetica-Bold', header_size)
+    detail_size = header_size
+    header_font = 'Helvetica-Bold'
+    detail_font = 'Helvetica'
+    pdf.setFont(header_font, header_size)
     pdf.drawString(producto_x, y, 'Producto')
-    pdf.drawRightString(qty_x, y, 'Cant.')
-    pdf.drawRightString(price_x, y, 'Precio')
-    pdf.drawRightString(importe_x, y, 'Importe')
+    pdf.drawCentredString(cant_center_x, y, 'Cant.')
+    pdf.drawCentredString(price_center_x, y, 'Precio')
+    pdf.drawCentredString(importe_center_x, y, 'Importe')
     y -= 3 * mm
     line()
 
-    detail_size = 8.5 if is_80mm else 7.6
-    pdf.setFont('Helvetica', detail_size)
-    unit_price = round_money(total_pagado)
-    producto_label = f'CUOTA {pago.documento or "PAGO"}'
-    if len(producto_label) > 18:
-        producto_label = f'{producto_label[:18]}...'
-    pdf.drawString(producto_x, y, producto_label)
-    pdf.drawRightString(qty_x, y, '1.0')
-    pdf.drawRightString(price_x, y, f'{unit_price:,.2f}')
-    pdf.drawRightString(importe_x, y, f'{total_pagado:,.2f}')
-    y -= 4.8 * mm
+    pdf.setFont(detail_font, detail_size)
+
+    def dibujar_linea_detalle(producto_label: str, importe_linea: Decimal) -> None:
+        nonlocal y
+        etiqueta = _truncar_texto_ancho_pdf(
+            pdf, producto_label, detail_font, detail_size, producto_max_w,
+        )
+        monto_txt = f'{importe_linea:,.2f}'
+        pdf.drawString(producto_x, y, etiqueta)
+        pdf.drawCentredString(cant_center_x, y, '1')
+        pdf.drawRightString(price_x, y, monto_txt)
+        pdf.drawRightString(importe_x, y, monto_txt)
+        y -= 4.8 * mm
+
+    lineas_detalle = [
+        item for item in detalle_distribucion if isinstance(item, dict)
+    ]
+    if not lineas_detalle:
+        producto_label = f'COBRO {pago.documento or "PAGO"}'
+        dibujar_linea_detalle(producto_label, total_venta)
+    else:
+        for item in lineas_detalle:
+            if item.get('abono_capital'):
+                producto_label = 'Abono a capital'
+            else:
+                cuota_n = item.get('cuota', '')
+                es_parcial = bool(item.get('parcial'))
+                mora_cuota = round_money(Decimal(str(item.get('mora', '0'))))
+                if mora_cuota > 0:
+                    producto_label = f'Cuota #{cuota_n} mora'
+                elif es_parcial:
+                    producto_label = 'Abono parcial'
+                else:
+                    producto_label = f'Cuota #{cuota_n}'
+            total_cuota = round_money(Decimal(str(item.get('total', '0'))))
+            dibujar_linea_detalle(producto_label, total_cuota)
     line()
 
     # Totales.
     pdf.setFont('Helvetica', detail_size)
-    totals = [
-        ('OP. GRAVADAS', subtotal),
-        ('MORA', mora),
-        ('SUB TOTAL', subtotal),
-    ]
+    if efectivo_recibido is not None:
+        mora_total = round_money(
+            sum(
+                Decimal(str(item.get('mora', '0')))
+                for item in lineas_detalle
+            )
+            if lineas_detalle
+            else mora
+        )
+        totals: list[tuple[str, Decimal]] = []
+        if mora_total > 0:
+            totals.append(('MORA', mora_total))
+        totals.append(('EFECTIVO RECIBIDO', efectivo_recibido))
+    else:
+        totals = [
+            ('OP. GRAVADAS', subtotal),
+            ('MORA', mora),
+            ('SUB TOTAL', subtotal),
+        ]
     for label, amount in totals:
         pdf.drawString(producto_x, y, label)
         pdf.drawRightString(importe_x, y, f'L/ {amount:,.2f}')
@@ -206,8 +334,24 @@ def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
 
     pdf.setFont('Helvetica-Bold', 10 if is_80mm else 8.8)
     pdf.drawString(producto_x, y, 'TOTAL VENTA')
-    pdf.drawRightString(importe_x, y, f'L/ {total_pagado:,.2f}')
+    pdf.drawRightString(importe_x, y, f'L/ {total_venta:,.2f}')
     y -= 5.5 * mm
+    if es_abono_parcial:
+        pdf.setFont('Helvetica', detail_size)
+        cuotas_parciales = [
+            item.get('cuota')
+            for item in lineas_detalle
+            if isinstance(item, dict) and item.get('parcial') and item.get('cuota') is not None
+        ]
+        if cuotas_parciales:
+            pdf.drawString(
+                producto_x,
+                y,
+                f'Abono parcial a cuota #{cuotas_parciales[0]}',
+            )
+        else:
+            pdf.drawString(producto_x, y, 'Abono parcial a la cuota')
+        y -= 4.2 * mm
     line()
 
     # Datos extra y QR.
@@ -220,7 +364,8 @@ def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
 
     qr_payload = (
         f"PAGO:{pago.id_pago}|PRESTAMO:{pago.id_prestamo.numero_prestamo}|"
-        f"CLIENTE:{cliente.dni}|FECHA:{pago.fecha_pago.isoformat()}|TOTAL:{total_pagado}"
+        f"CLIENTE:{cliente.dni}|FECHA:{pago.fecha_pago.isoformat()}|"
+        f"HORA:{formato_hora_hn(momento_cobro)}|TOTAL:{total_venta}"
     )
     qr_code = qr.QrCodeWidget(qr_payload)
     bounds = qr_code.getBounds()
@@ -334,7 +479,7 @@ class DashboardResumenView(APIView):
 
         pagos_mes = [0] * 12
         for row in (
-            Pago.objects.filter(fecha_pago__year=anio)
+            filtrar_pagos_vigentes(Pago.objects).filter(fecha_pago__year=anio)
             .annotate(mes=ExtractMonth('fecha_pago'))
             .values('mes')
             .annotate(total=Count('id_pago'))
@@ -356,7 +501,7 @@ class DashboardResumenView(APIView):
 
         cobros_semana = [0] * 7
         for row in (
-            Pago.objects.annotate(dia=ExtractWeekDay('fecha_pago'))
+            filtrar_pagos_vigentes(Pago.objects).annotate(dia=ExtractWeekDay('fecha_pago'))
             .values('dia')
             .annotate(total=Count('id_pago'))
         ):
@@ -369,7 +514,9 @@ class DashboardResumenView(APIView):
         monto_cobrado: list[float] = []
         monto_desembolsado: list[float] = []
         for year, month in meses_tendencia:
-            cobro = Pago.objects.filter(fecha_pago__year=year, fecha_pago__month=month).aggregate(
+            cobro = filtrar_pagos_vigentes(
+                Pago.objects.filter(fecha_pago__year=year, fecha_pago__month=month)
+            ).aggregate(
                 total=Sum(F('capital') + F('interes') + F('mora')),
             )['total']
             desembolso = Prestamo.objects.filter(fecha_entrega__year=year, fecha_entrega__month=month).aggregate(
@@ -383,7 +530,9 @@ class DashboardResumenView(APIView):
         prestamo_ids = [p.id_prestamo for p in prestamos_qs]
         ultimo_pago_por_prestamo: dict[int, Pago] = {}
         if prestamo_ids:
-            for pago in Pago.objects.filter(id_prestamo_id__in=prestamo_ids).order_by(
+            for pago in filtrar_pagos_vigentes(
+                Pago.objects.filter(id_prestamo_id__in=prestamo_ids)
+            ).order_by(
                 'id_prestamo_id',
                 '-fecha_pago',
                 '-id_pago',
@@ -796,7 +945,7 @@ def _cargar_auxiliar_reporte_integracion(ids: list[int]) -> tuple[
     abonado_por_prestamo: dict[int, Decimal] = defaultdict(lambda: Decimal('0.00'))
     if ids:
         for pg in (
-            Pago.objects.filter(id_prestamo_id__in=ids)
+            filtrar_pagos_vigentes(Pago.objects.filter(id_prestamo_id__in=ids))
             .only('id_prestamo_id', 'documento', 'capital', 'interes', 'mora')
             .iterator()
         ):
@@ -816,7 +965,7 @@ def _cargar_auxiliar_reporte_integracion(ids: list[int]) -> tuple[
     ultimo_pago_por: dict[int, Pago] = {}
     if ids:
         for pay in (
-            Pago.objects.filter(id_prestamo_id__in=ids)
+            filtrar_pagos_vigentes(Pago.objects.filter(id_prestamo_id__in=ids))
             .order_by('id_prestamo_id', '-fecha_pago', '-id_pago')
             .only('id_prestamo_id', 'saldo', 'fecha_pago', 'id_pago')
         ):
@@ -1033,6 +1182,7 @@ class PrestamoViewSet(viewsets.ModelViewSet):
         prestamos_qs = qs.order_by('numero_prestamo')
         ids = list(prestamos_qs.values_list('id_prestamo', flat=True))
         fecha_reporte = timezone.localdate().isoformat()
+        generado_en = ahora_local_iso()
 
         if not ids:
             resumen_vacio = {
@@ -1046,6 +1196,7 @@ class PrestamoViewSet(viewsets.ModelViewSet):
             return Response(
                 {
                     'fecha_reporte': fecha_reporte,
+                    'generado_en': generado_en,
                     'count': 0,
                     'page': 1,
                     'next': None,
@@ -1115,6 +1266,7 @@ class PrestamoViewSet(viewsets.ModelViewSet):
             return Response(
                 {
                     'fecha_reporte': fecha_reporte,
+                    'generado_en': generado_en,
                     'filas': _build_filas(list(prestamos_qs)),
                     'resumen': resumen,
                 }
@@ -1128,6 +1280,7 @@ class PrestamoViewSet(viewsets.ModelViewSet):
 
         payload = {
             'fecha_reporte': fecha_reporte,
+            'generado_en': generado_en,
             'count': paginator.count,
             'page': page_obj.number,
             'next': None,
@@ -1242,7 +1395,8 @@ def _datos_historial_pagos_cobros(request) -> dict:
     inicio, fin = _rango_periodo_historial_pagos(modo, fecha_str, mes_str, anio_str)
 
     qs = (
-        Pago.objects.filter(fecha_pago__gte=inicio, fecha_pago__lte=fin)
+        filtrar_pagos_vigentes(Pago.objects)
+        .filter(fecha_pago__gte=inicio, fecha_pago__lte=fin)
         .select_related(
             'id_prestamo',
             'id_prestamo__id_cliente',
@@ -1287,6 +1441,8 @@ def _datos_historial_pagos_cobros(request) -> dict:
             {
                 'id_pago': pg.id_pago,
                 'fecha_pago': pg.fecha_pago.isoformat(),
+                'hora_pago': formato_hora_hn(cobrado_en_efectivo(pg)),
+                'cobrado_en': pg.cobrado_en.isoformat() if pg.cobrado_en else None,
                 'documento': pg.documento,
                 'capital': str(round_money(capital)),
                 'interes': str(round_money(interes)),
@@ -1305,6 +1461,7 @@ def _datos_historial_pagos_cobros(request) -> dict:
         'modo': (modo or 'dia').strip().lower(),
         'fecha_inicio': inicio.isoformat(),
         'fecha_fin': fin.isoformat(),
+        'generado_en': ahora_local_iso(),
         'cartera_etiqueta': cartera_etiqueta,
         'filas': filas,
         'resumen': {
@@ -1376,7 +1533,7 @@ class PagoViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['get'], url_path='factura-pdf')
     def factura_pdf(self, request, pk=None):
         """Retorna un PDF imprimible de factura para un pago."""
-        pago = self.get_object()
+        pago = _resolver_pago_factura(self.get_object())
         ticket_format = request.query_params.get('ticket', '58').strip()
         if ticket_format not in ('58', '80'):
             ticket_format = '58'
@@ -1386,6 +1543,42 @@ class PagoViewSet(viewsets.ModelViewSet):
             f'inline; filename="factura-pago-{pago.id_pago}-{ticket_format}mm.pdf"'
         )
         return response
+
+    @action(detail=True, methods=['post'], url_path='anular')
+    def anular(self, request, pk=None):
+        """Anula un cobro completo (factura) y revierte saldos del préstamo."""
+        actor = usuario_operativo_desde_request(request)
+        if actor is None or actor.rol not in WRITE_ANULAR_PAGOS:
+            return Response(
+                {'detail': 'Solo administrador o supervisor pueden anular cobros.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        pago = self.get_object()
+        if pago.anulado:
+            return Response({'detail': 'Este cobro ya fue anulado.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        motivo = (request.data.get('motivo') or '').strip()
+        if not motivo:
+            return Response({'motivo': 'Indique el motivo de la anulación.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        grupo = anular_grupo_cobro(pago, actor, motivo)
+        maestro = next((pg for pg in grupo if pg.monto_recibido_cliente is not None), grupo[0])
+        return Response(
+            {
+                'detail': 'Cobro anulado correctamente.',
+                'id_pago_maestro': maestro.id_pago,
+                'pagos_anulados': [pg.id_pago for pg in grupo],
+                'id_prestamo': maestro.id_prestamo_id,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    def destroy(self, request, *args, **kwargs):
+        return Response(
+            {'detail': 'Use POST /pagos/{id}/anular/ para anular un cobro.'},
+            status=status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
 
 
 class PrestamoCuotaViewSet(viewsets.ModelViewSet):

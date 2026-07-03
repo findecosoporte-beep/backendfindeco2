@@ -10,6 +10,9 @@ WRITE_ADMIN = ('administrador', 'supervisor')
 # Cobros y pagos
 WRITE_COBROS = ('administrador', 'supervisor', 'asesor', 'cobrador', 'cobranza_adm_jud')
 
+# Anulación de cobros / facturas
+WRITE_ANULAR_PAGOS = WRITE_ADMIN
+
 # Documentos de cliente (expediente)
 WRITE_DOCUMENTOS = WRITE_COBROS
 

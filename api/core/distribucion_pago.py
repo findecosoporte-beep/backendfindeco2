@@ -14,6 +14,7 @@ __all__ = [
     'abonado_por_cuota_desde_pagos',
     'cuota_esta_pagada',
     'cuotas_pagadas_completas',
+    'distribuir_cobro_con_excedente_a_capital',
     'distribuir_monto_en_cuotas',
     'pendiente_cuota',
     'saldo_pendiente_con_abonos',
@@ -90,6 +91,85 @@ def saldo_pendiente_tras_abono(
     abonado = dict(abonado_previo)
     abonado[cuota_numero] = abonado.get(cuota_numero, Decimal('0.00')) + capital + interes + mora
     return saldo_pendiente_con_abonos(plan_rows, abonado)
+
+
+def _compromiso_total_plan(plan_rows: list) -> Decimal:
+    return round_money(sum(monto_cuota_programada(row) for row in plan_rows))
+
+
+def _saldo_tras_monto_pagado(plan_rows: list, pagado_previo: Decimal, pagado_en_cobro: Decimal) -> Decimal:
+    compromiso = _compromiso_total_plan(plan_rows)
+    return round_money(max(Decimal('0.00'), compromiso - pagado_previo - pagado_en_cobro))
+
+
+def distribuir_cobro_con_excedente_a_capital(
+    plan_rows: list,
+    cuota_inicio: int,
+    monto_distribuir: Decimal,
+    mora_total: Decimal,
+    abonado_previo: dict[int, Decimal],
+) -> list[dict]:
+    """
+    Aplica el cobro a la cuota en curso; lo que excede el pendiente de esa cuota
+    se registra como abono a capital (no avanza a la siguiente cuota).
+    """
+    if monto_distribuir <= 0 and mora_total <= 0:
+        return []
+
+    fila_inicio = next((row for row in plan_rows if row.numero_cuota == cuota_inicio), None)
+    if fila_inicio is None:
+        return []
+
+    pendiente = pendiente_cuota(fila_inicio, abonado_previo.get(cuota_inicio, Decimal('0.00')))
+    restante = round_money(monto_distribuir)
+    mora_restante = round_money(mora_total)
+    pagado_previo = round_money(sum(abonado_previo.values(), Decimal('0.00')))
+    pagado_en_cobro = Decimal('0.00')
+    lineas: list[dict] = []
+
+    aplicar_cuota = min(restante, pendiente) if pendiente > 0 else Decimal('0.00')
+    if aplicar_cuota > 0 or mora_restante > 0:
+        capital, interes = (
+            _partir_monto_cuota(aplicar_cuota, fila_inicio)
+            if aplicar_cuota > 0
+            else (Decimal('0.00'), Decimal('0.00'))
+        )
+        monto_linea = round_money(capital + interes + mora_restante)
+        pagado_en_cobro += monto_linea
+        es_parcial = (
+            pendiente > 0
+            and aplicar_cuota < pendiente - CUOTA_PAGADA_TOLERANCIA
+        )
+        lineas.append(
+            {
+                'numero_cuota': cuota_inicio,
+                'documento': f'Cuota {cuota_inicio}',
+                'capital': capital,
+                'interes': interes,
+                'mora': mora_restante,
+                'saldo': _saldo_tras_monto_pagado(plan_rows, pagado_previo, pagado_en_cobro),
+                'parcial': es_parcial,
+            }
+        )
+        restante = round_money(restante - aplicar_cuota)
+        mora_restante = Decimal('0.00')
+
+    excedente = restante
+    if excedente > 0:
+        pagado_en_cobro += excedente
+        lineas.append(
+            {
+                'numero_cuota': None,
+                'abono_capital': True,
+                'documento': 'Abono a capital',
+                'capital': excedente,
+                'interes': Decimal('0.00'),
+                'mora': Decimal('0.00'),
+                'saldo': _saldo_tras_monto_pagado(plan_rows, pagado_previo, pagado_en_cobro),
+            }
+        )
+
+    return lineas
 
 
 def distribuir_monto_en_cuotas(

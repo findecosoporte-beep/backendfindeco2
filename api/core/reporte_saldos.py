@@ -71,10 +71,12 @@ def saldos_reporte_integracion(
     """
     if plan_rows:
         saldo_inicial = total_compromiso_desde_plan(plan_rows)
+        saldo_abonado = round_money(max(Decimal('0.00'), saldo_inicial - abonado_total))
         if abonado_por_cuota is not None:
-            saldo_actual = saldo_pendiente_desde_plan(plan_rows, abonado_por_cuota=abonado_por_cuota)
+            saldo_cuotas = saldo_pendiente_desde_plan(plan_rows, abonado_por_cuota=abonado_por_cuota)
+            saldo_actual = min(saldo_cuotas, saldo_abonado)
         else:
-            saldo_actual = saldo_pendiente_desde_plan(plan_rows, paid_nums=paid_nums or set())
+            saldo_actual = saldo_abonado
         return saldo_inicial, saldo_actual
 
     saldo_inicial = total_compromiso_desde_prestamo(prestamo)

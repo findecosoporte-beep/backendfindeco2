@@ -6,6 +6,8 @@ import io
 from datetime import date
 from decimal import Decimal
 
+from django.utils import timezone
+
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
@@ -13,6 +15,7 @@ from reportlab.lib.units import mm
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from .core.cuotas import extract_cuota_numero_from_documento
+from .core.fechas_display import ahora_local_iso, cobrado_en_efectivo, formato_fecha_hn, formato_fecha_hora_hn, formato_hora_hn
 from .core.findeco_brand import platypus_logo_findeco
 from .core.money import round_money
 from .core.reporte_saldos import monto_cuota_programada
@@ -29,7 +32,7 @@ ETIQUETAS_ESTADO_PRESTAMO = {
 MARGIN_H_MM = 14
 # Ancho útil carta (letter) menos márgenes laterales del documento.
 TABLE_WIDTH_MM = (letter[0] / mm) - (2 * MARGIN_H_MM)
-_COL_RATIO_PLAN_CUOTAS = (12, 24, 26, 26, 22, 24)
+_COL_RATIO_PLAN_CUOTAS = (10, 22, 24, 24, 20, 22, 18)
 
 
 def _anchos_tabla_plan_cuotas() -> list[float]:
@@ -80,7 +83,7 @@ def recolectar_datos_estado_cuenta(prestamo: Prestamo) -> dict:
         PrestamoCuota.objects.filter(id_prestamo=prestamo).order_by('numero_cuota'),
     )
     pagos = list(
-        Pago.objects.filter(id_prestamo=prestamo).order_by('fecha_pago', 'id_pago'),
+        Pago.objects.filter(id_prestamo=prestamo, anulado=False).order_by('fecha_pago', 'id_pago'),
     )
     pago_map = pago_por_cuota_con_fallback(cuotas, pagos)
 
@@ -95,6 +98,7 @@ def recolectar_datos_estado_cuenta(prestamo: Prestamo) -> dict:
                 'saldo_capital': str(round_money(cuota.saldo_capital_programado)),
                 'estado': 'Pagada' if pago else 'Pendiente',
                 'fecha_pago': pago.fecha_pago.isoformat() if pago else '',
+                'hora_pago': formato_hora_hn(cobrado_en_efectivo(pago)) if pago else '',
                 'documento': (pago.documento or f'Cuota {cuota.numero_cuota}') if pago else '',
             }
         )
@@ -116,7 +120,7 @@ def recolectar_datos_estado_cuenta(prestamo: Prestamo) -> dict:
         'cartera_nombre': (cartera.nombre if cartera else '') or '',
         'estado_prestamo': ETIQUETAS_ESTADO_PRESTAMO.get(prestamo.estado, prestamo.estado),
         'dias_mora': int(prestamo.dias_mora or 0),
-        'fecha_emision': date.today().isoformat(),
+        'fecha_emision': ahora_local_iso(),
         'cuotas': filas_cuotas,
         'resumen': {
             'cuotas_pagadas': sum(1 for f in filas_cuotas if f['estado'] == 'Pagada'),
@@ -172,7 +176,7 @@ def exportar_estado_cuenta_pdf(datos: dict) -> bytes:
     story.append(Paragraph('FINDECO — Estado de cuenta', title_style))
     story.append(
         Paragraph(
-            f"Emisión: {_format_fecha(datos.get('fecha_emision'))}",
+            f"Emisión: {formato_fecha_hora_hn(timezone.localtime(timezone.now()))}",
             ParagraphStyle('EcDate', parent=meta_style, alignment=1),
         )
     )
@@ -214,7 +218,7 @@ def exportar_estado_cuenta_pdf(datos: dict) -> bytes:
     )
 
     story.append(Paragraph('Plan de cuotas', section_style))
-    table_data = [['N°', 'Fecha prog.', 'Cuota', 'Saldo cap.', 'Estado', 'Fecha pago']]
+    table_data = [['N°', 'Fecha prog.', 'Cuota', 'Saldo cap.', 'Estado', 'Fecha pago', 'Hora pago']]
     for fila in datos.get('cuotas', []):
         table_data.append(
             [
@@ -224,6 +228,7 @@ def exportar_estado_cuenta_pdf(datos: dict) -> bytes:
                 _money_pdf(fila.get('saldo_capital', '0')),
                 fila.get('estado', ''),
                 _format_fecha(fila.get('fecha_pago') or None),
+                fila.get('hora_pago') or '—',
             ]
         )
 

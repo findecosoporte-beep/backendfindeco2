@@ -5,14 +5,17 @@ from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.db import transaction
+from django.db.models import Max
+from django.utils import timezone
 from rest_framework import serializers
 
 from .cobrador_scope import validar_cobro_por_cartera
 from .core.cuotas import extract_cuota_numero_from_documento
 from .core.distribucion_pago import (
+    CUOTA_PAGADA_TOLERANCIA,
     abonado_por_cuota_desde_pagos,
     cuota_esta_pagada,
-    distribuir_monto_en_cuotas,
+    distribuir_cobro_con_excedente_a_capital,
     pendiente_cuota,
     saldo_pendiente_tras_abono,
 )
@@ -80,6 +83,34 @@ def _resolver_cliente_en_attrs(attrs: dict, instance: Prestamo | None = None) ->
     if isinstance(cliente, Cliente):
         return cliente
     return Cliente.objects.filter(pk=cliente).first()
+
+
+ESTADOS_PRESTAMO_ACTIVO = frozenset({'activo', 'mora', 'pendiente_aprobacion'})
+
+
+def _validar_cliente_para_nuevo_prestamo(cliente: Cliente) -> None:
+    """Solo un préstamo abierto por cliente; renovación si los anteriores están cerrados."""
+    activos = Prestamo.objects.filter(id_cliente=cliente, estado__in=ESTADOS_PRESTAMO_ACTIVO)
+    if not activos.exists():
+        return
+    numeros = ', '.join(activos.values_list('numero_prestamo', flat=True)[:3])
+    raise serializers.ValidationError(
+        {
+            'id_cliente': (
+                f'El cliente tiene un préstamo activo o pendiente ({numeros}). '
+                'Debe estar pagado o cancelado para registrar uno nuevo con otro código.'
+            )
+        }
+    )
+
+
+def _ciclos_para_renovacion(cliente: Cliente) -> int:
+    """Ciclo 0 en el primer préstamo; en renovación, máximo histórico + 1."""
+    previos = Prestamo.objects.filter(id_cliente=cliente)
+    if not previos.exists():
+        return 0
+    max_ciclos = previos.aggregate(m=Max('ciclos'))['m'] or 0
+    return int(max_ciclos) + 1
 
 
 class ClienteSerializer(serializers.ModelSerializer):
@@ -496,10 +527,15 @@ class PrestamoSerializer(serializers.ModelSerializer):
                         )
                     }
                 )
+            if cliente is not None:
+                _validar_cliente_para_nuevo_prestamo(cliente)
         return attrs
 
     @transaction.atomic
     def create(self, validated_data):
+        cliente = validated_data.get('id_cliente')
+        if cliente is not None:
+            validated_data['ciclos'] = _ciclos_para_renovacion(cliente)
         prestamo = super().create(validated_data)
 
         monto = Decimal(prestamo.monto)
@@ -601,7 +637,7 @@ class PagoSerializer(serializers.ModelSerializer):
         self.distribucion_resumen: list[dict] | None = None
 
     def _pagos_existentes(self, prestamo: Prestamo, instance_pk: int | None = None):
-        qs = Pago.objects.filter(id_prestamo=prestamo)
+        qs = Pago.objects.filter(id_prestamo=prestamo, anulado=False)
         if instance_pk is not None:
             qs = qs.exclude(pk=instance_pk)
         return qs
@@ -676,6 +712,10 @@ class PagoSerializer(serializers.ModelSerializer):
     @transaction.atomic
     def create(self, validated_data):
         monto_recibido = validated_data.pop('monto_recibido', None)
+        monto_recibido_cliente = (
+            round_money(Decimal(monto_recibido)) if monto_recibido is not None else None
+        )
+        cobrado_en = validated_data.pop('cobrado_en', None) or timezone.now()
         prestamo = validated_data.get('id_prestamo')
         documento = validated_data.get('documento')
         cuota_numero = extract_cuota_numero_from_documento(documento)
@@ -714,7 +754,7 @@ class PagoSerializer(serializers.ModelSerializer):
                 debe_distribuir = True
 
         if debe_distribuir:
-            lineas = distribuir_monto_en_cuotas(
+            lineas = distribuir_cobro_con_excedente_a_capital(
                 plan_rows,
                 cuota_numero,
                 monto_distribuir,
@@ -724,30 +764,51 @@ class PagoSerializer(serializers.ModelSerializer):
             if lineas:
                 pagos_creados: list[Pago] = []
                 fecha_pago = validated_data['fecha_pago']
-                for linea in lineas:
-                    pagos_creados.append(
-                        Pago.objects.create(
-                            id_prestamo=prestamo,
-                            fecha_pago=fecha_pago,
-                            documento=linea['documento'],
-                            capital=linea['capital'],
-                            interes=linea['interes'],
-                            mora=linea['mora'],
-                            saldo=linea['saldo'],
-                        )
-                    )
-                self.distribucion_resumen = [
-                    {
-                        'cuota': linea['numero_cuota'],
+
+                def _linea_distribucion_resumen(linea: dict) -> dict:
+                    total = round_money(linea['capital'] + linea['interes'] + linea['mora'])
+                    item: dict = {
                         'capital': str(linea['capital']),
                         'interes': str(linea['interes']),
                         'mora': str(linea['mora']),
-                        'total': str(
-                            round_money(linea['capital'] + linea['interes'] + linea['mora'])
-                        ),
+                        'total': str(total),
                     }
-                    for linea in lineas
-                ]
+                    if linea.get('abono_capital'):
+                        item['abono_capital'] = True
+                    else:
+                        item['cuota'] = linea['numero_cuota']
+                    if linea.get('parcial'):
+                        item['parcial'] = True
+                    return item
+
+                self.distribucion_resumen = [_linea_distribucion_resumen(linea) for linea in lineas]
+                detalle_factura = None
+                if monto_recibido_cliente is not None:
+                    detalle_factura = [dict(item) for item in self.distribucion_resumen]
+                pago_maestro: Pago | None = None
+                for idx, linea in enumerate(lineas):
+                    create_kwargs = {
+                        'id_prestamo': prestamo,
+                        'fecha_pago': fecha_pago,
+                        'cobrado_en': cobrado_en,
+                        'documento': linea['documento'],
+                        'capital': linea['capital'],
+                        'interes': linea['interes'],
+                        'mora': linea['mora'],
+                        'saldo': linea['saldo'],
+                    }
+                    if idx == 0 and monto_recibido_cliente is not None:
+                        create_kwargs['monto_recibido_cliente'] = monto_recibido_cliente
+                        create_kwargs['detalle_distribucion'] = detalle_factura
+                    elif pago_maestro is not None:
+                        create_kwargs['id_pago_factura'] = pago_maestro
+                    pago_linea = Pago.objects.create(**create_kwargs)
+                    if idx == 0:
+                        pago_maestro = pago_linea
+                    pagos_creados.append(pago_linea)
+                if pago_maestro is not None and len(pagos_creados) > 1:
+                    pago_maestro.saldo = pagos_creados[-1].saldo
+                    pago_maestro.save(update_fields=['saldo'])
                 ultimo = pagos_creados[-1]
                 self._sync_prestamo_state(prestamo, ultimo)
                 return pagos_creados[0]
@@ -762,6 +823,11 @@ class PagoSerializer(serializers.ModelSerializer):
                 mora,
             )
 
+        if monto_recibido_cliente is not None:
+            validated_data['monto_recibido_cliente'] = monto_recibido_cliente
+
+        validated_data['cobrado_en'] = cobrado_en
+
         pago = super().create(validated_data)
         self.distribucion_resumen = None
         self._sync_prestamo_state(pago.id_prestamo, pago)
@@ -770,6 +836,7 @@ class PagoSerializer(serializers.ModelSerializer):
     @transaction.atomic
     def update(self, instance, validated_data):
         validated_data.pop('monto_recibido', None)
+        validated_data.pop('cobrado_en', None)
         prestamo = validated_data.get('id_prestamo', instance.id_prestamo)
         documento = validated_data.get('documento', instance.documento)
         cuota_numero = extract_cuota_numero_from_documento(documento)
