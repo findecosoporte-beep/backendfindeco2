@@ -58,6 +58,7 @@ from .core.prestamo_calc import (
     tasa_semanal_negocio,
     plan_totales_desde_condiciones,
 )
+from .core.anulacion_pago import anular_grupo_cobro, filtrar_pagos_vigentes
 from .core.distribucion_pago import (
     abonado_por_cuota_desde_pagos,
     cuotas_pagadas_completas,
@@ -86,7 +87,7 @@ from .models import (
 )
 from .permissions import RoleBasedAccessPermission
 from .pagination import ClienteListPagination, ReporteIntegracionPagination
-from .role_policy import WRITE_ADMIN, WRITE_COBROS, WRITE_CONTRATOS, WRITE_DOCUMENTOS
+from .role_policy import WRITE_ADMIN, WRITE_ANULAR_PAGOS, WRITE_COBROS, WRITE_CONTRATOS, WRITE_DOCUMENTOS
 from .serializers import (
     CarteraSerializer,
     ClienteSerializer,
@@ -236,6 +237,10 @@ def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
     folio_size = 9 if is_80mm else 8
     center_text('FACTURA ELECTRONICA', title_size, True)
     center_text(f'F{pago.id_pago:03d}-{pago.id_prestamo.id_prestamo:08d}', folio_size, False, 4.8)
+    if pago.anulado:
+        pdf.setFillColor(colors.HexColor('#CC0000'))
+        center_text('*** ANULADA ***', title_size, True, 5.2)
+        pdf.setFillColor(colors.black)
     line()
 
     body_size = 9 if is_80mm else 7.8
@@ -474,7 +479,7 @@ class DashboardResumenView(APIView):
 
         pagos_mes = [0] * 12
         for row in (
-            Pago.objects.filter(fecha_pago__year=anio)
+            filtrar_pagos_vigentes(Pago.objects).filter(fecha_pago__year=anio)
             .annotate(mes=ExtractMonth('fecha_pago'))
             .values('mes')
             .annotate(total=Count('id_pago'))
@@ -496,7 +501,7 @@ class DashboardResumenView(APIView):
 
         cobros_semana = [0] * 7
         for row in (
-            Pago.objects.annotate(dia=ExtractWeekDay('fecha_pago'))
+            filtrar_pagos_vigentes(Pago.objects).annotate(dia=ExtractWeekDay('fecha_pago'))
             .values('dia')
             .annotate(total=Count('id_pago'))
         ):
@@ -509,7 +514,9 @@ class DashboardResumenView(APIView):
         monto_cobrado: list[float] = []
         monto_desembolsado: list[float] = []
         for year, month in meses_tendencia:
-            cobro = Pago.objects.filter(fecha_pago__year=year, fecha_pago__month=month).aggregate(
+            cobro = filtrar_pagos_vigentes(
+                Pago.objects.filter(fecha_pago__year=year, fecha_pago__month=month)
+            ).aggregate(
                 total=Sum(F('capital') + F('interes') + F('mora')),
             )['total']
             desembolso = Prestamo.objects.filter(fecha_entrega__year=year, fecha_entrega__month=month).aggregate(
@@ -523,7 +530,9 @@ class DashboardResumenView(APIView):
         prestamo_ids = [p.id_prestamo for p in prestamos_qs]
         ultimo_pago_por_prestamo: dict[int, Pago] = {}
         if prestamo_ids:
-            for pago in Pago.objects.filter(id_prestamo_id__in=prestamo_ids).order_by(
+            for pago in filtrar_pagos_vigentes(
+                Pago.objects.filter(id_prestamo_id__in=prestamo_ids)
+            ).order_by(
                 'id_prestamo_id',
                 '-fecha_pago',
                 '-id_pago',
@@ -936,7 +945,7 @@ def _cargar_auxiliar_reporte_integracion(ids: list[int]) -> tuple[
     abonado_por_prestamo: dict[int, Decimal] = defaultdict(lambda: Decimal('0.00'))
     if ids:
         for pg in (
-            Pago.objects.filter(id_prestamo_id__in=ids)
+            filtrar_pagos_vigentes(Pago.objects.filter(id_prestamo_id__in=ids))
             .only('id_prestamo_id', 'documento', 'capital', 'interes', 'mora')
             .iterator()
         ):
@@ -956,7 +965,7 @@ def _cargar_auxiliar_reporte_integracion(ids: list[int]) -> tuple[
     ultimo_pago_por: dict[int, Pago] = {}
     if ids:
         for pay in (
-            Pago.objects.filter(id_prestamo_id__in=ids)
+            filtrar_pagos_vigentes(Pago.objects.filter(id_prestamo_id__in=ids))
             .order_by('id_prestamo_id', '-fecha_pago', '-id_pago')
             .only('id_prestamo_id', 'saldo', 'fecha_pago', 'id_pago')
         ):
@@ -1386,7 +1395,8 @@ def _datos_historial_pagos_cobros(request) -> dict:
     inicio, fin = _rango_periodo_historial_pagos(modo, fecha_str, mes_str, anio_str)
 
     qs = (
-        Pago.objects.filter(fecha_pago__gte=inicio, fecha_pago__lte=fin)
+        filtrar_pagos_vigentes(Pago.objects)
+        .filter(fecha_pago__gte=inicio, fecha_pago__lte=fin)
         .select_related(
             'id_prestamo',
             'id_prestamo__id_cliente',
@@ -1533,6 +1543,42 @@ class PagoViewSet(viewsets.ModelViewSet):
             f'inline; filename="factura-pago-{pago.id_pago}-{ticket_format}mm.pdf"'
         )
         return response
+
+    @action(detail=True, methods=['post'], url_path='anular')
+    def anular(self, request, pk=None):
+        """Anula un cobro completo (factura) y revierte saldos del préstamo."""
+        actor = usuario_operativo_desde_request(request)
+        if actor is None or actor.rol not in WRITE_ANULAR_PAGOS:
+            return Response(
+                {'detail': 'Solo administrador o supervisor pueden anular cobros.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        pago = self.get_object()
+        if pago.anulado:
+            return Response({'detail': 'Este cobro ya fue anulado.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        motivo = (request.data.get('motivo') or '').strip()
+        if not motivo:
+            return Response({'motivo': 'Indique el motivo de la anulación.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        grupo = anular_grupo_cobro(pago, actor, motivo)
+        maestro = next((pg for pg in grupo if pg.monto_recibido_cliente is not None), grupo[0])
+        return Response(
+            {
+                'detail': 'Cobro anulado correctamente.',
+                'id_pago_maestro': maestro.id_pago,
+                'pagos_anulados': [pg.id_pago for pg in grupo],
+                'id_prestamo': maestro.id_prestamo_id,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    def destroy(self, request, *args, **kwargs):
+        return Response(
+            {'detail': 'Use POST /pagos/{id}/anular/ para anular un cobro.'},
+            status=status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
 
 
 class PrestamoCuotaViewSet(viewsets.ModelViewSet):

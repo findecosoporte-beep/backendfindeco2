@@ -83,7 +83,7 @@ def recolectar_datos_estado_cuenta(prestamo: Prestamo) -> dict:
         PrestamoCuota.objects.filter(id_prestamo=prestamo).order_by('numero_cuota'),
     )
     pagos = list(
-        Pago.objects.filter(id_prestamo=prestamo).order_by('fecha_pago', 'id_pago'),
+        Pago.objects.filter(id_prestamo=prestamo, anulado=False).order_by('fecha_pago', 'id_pago'),
     )
     pago_map = pago_por_cuota_con_fallback(cuotas, pagos)
 

@@ -333,6 +333,21 @@ class Pago(models.Model):
         related_name='pagos_mismo_cobro',
         help_text='Pago maestro cuya factura consolida este abono (cobros repartidos).',
     )
+    anulado = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text='Cobro anulado; no cuenta en saldos ni reportes.',
+    )
+    anulado_en = models.DateTimeField(null=True, blank=True)
+    anulado_por = models.ForeignKey(
+        'Usuario',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        db_column='anulado_por',
+        related_name='pagos_anulados',
+    )
+    motivo_anulacion = models.CharField(max_length=500, null=True, blank=True)
 
     class Meta:
         """Mapeo ORM: tabla `pagos` y orden por fecha e id."""

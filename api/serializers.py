@@ -637,7 +637,7 @@ class PagoSerializer(serializers.ModelSerializer):
         self.distribucion_resumen: list[dict] | None = None
 
     def _pagos_existentes(self, prestamo: Prestamo, instance_pk: int | None = None):
-        qs = Pago.objects.filter(id_prestamo=prestamo)
+        qs = Pago.objects.filter(id_prestamo=prestamo, anulado=False)
         if instance_pk is not None:
             qs = qs.exclude(pk=instance_pk)
         return qs
