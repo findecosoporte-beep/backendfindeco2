@@ -523,7 +523,7 @@ class PrestamoSerializer(serializers.ModelSerializer):
                     {
                         'id_cartera': (
                             'Selecciona una cartera con día de cobro (p. ej. lunes). '
-                            'Las cuotas se programan siempre en ese día.'
+                            'Las cuotas se programan en ese día de la semana.'
                         )
                     }
                 )
@@ -692,7 +692,6 @@ class PagoSerializer(serializers.ModelSerializer):
     def _sync_prestamo_state(prestamo: Prestamo, pago: Pago) -> None:
         """Actualiza estado y dias de mora del prestamo en base al pago."""
         saldo = Decimal(pago.saldo)
-        mora = Decimal(pago.mora)
         dias_mora = 0
         if pago.fecha_pago and prestamo.fecha_vencimiento and pago.fecha_pago > prestamo.fecha_vencimiento:
             dias_mora = (pago.fecha_pago - prestamo.fecha_vencimiento).days
@@ -700,7 +699,7 @@ class PagoSerializer(serializers.ModelSerializer):
         if saldo <= 0:
             prestamo.estado = 'pagado'
             prestamo.dias_mora = 0
-        elif mora > 0 or dias_mora > 0:
+        elif dias_mora > 0:
             prestamo.estado = 'mora'
             prestamo.dias_mora = max(dias_mora, prestamo.dias_mora)
         else:
@@ -732,9 +731,11 @@ class PagoSerializer(serializers.ModelSerializer):
             abonado_por_cuota_desde_pagos(self._pagos_existentes(prestamo)) if prestamo else {}
         )
 
-        mora = Decimal(validated_data.get('mora', 0))
+        # Cobros sin cargo por mora: siempre se registra en 0.
+        validated_data['mora'] = Decimal('0.00')
+        mora = Decimal('0.00')
         if monto_recibido is not None:
-            monto_distribuir = round_money(Decimal(monto_recibido) - mora)
+            monto_distribuir = round_money(Decimal(monto_recibido))
         else:
             monto_distribuir = round_money(
                 Decimal(validated_data.get('capital', 0)) + Decimal(validated_data.get('interes', 0))

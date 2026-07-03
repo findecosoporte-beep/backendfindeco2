@@ -105,12 +105,10 @@ def recolectar_datos_estado_cuenta(prestamo: Prestamo) -> dict:
 
     tot_capital = Decimal('0.00')
     tot_interes = Decimal('0.00')
-    tot_mora = Decimal('0.00')
     for pago in pagos:
         tot_capital += Decimal(pago.capital)
         tot_interes += Decimal(pago.interes)
-        tot_mora += Decimal(pago.mora)
-    total_abonado = round_money(tot_capital + tot_interes + tot_mora)
+    total_abonado = round_money(tot_capital + tot_interes)
 
     return {
         'numero_prestamo': prestamo.numero_prestamo,
@@ -119,7 +117,6 @@ def recolectar_datos_estado_cuenta(prestamo: Prestamo) -> dict:
         'telefono_cliente': ((cliente.telefono if cliente else '') or '').strip(),
         'cartera_nombre': (cartera.nombre if cartera else '') or '',
         'estado_prestamo': ETIQUETAS_ESTADO_PRESTAMO.get(prestamo.estado, prestamo.estado),
-        'dias_mora': int(prestamo.dias_mora or 0),
         'fecha_emision': ahora_local_iso(),
         'cuotas': filas_cuotas,
         'resumen': {
@@ -128,7 +125,6 @@ def recolectar_datos_estado_cuenta(prestamo: Prestamo) -> dict:
             'total_abonado': str(total_abonado),
             'total_capital': str(round_money(tot_capital)),
             'total_interes': str(round_money(tot_interes)),
-            'total_mora': str(round_money(tot_mora)),
             'total_pagos': len(pagos),
         },
     }
@@ -188,7 +184,7 @@ def exportar_estado_cuenta_pdf(datos: dict) -> bytes:
         f"<b>Teléfono:</b> {datos.get('telefono_cliente') or '—'}",
         f"<b>Préstamo:</b> {datos.get('numero_prestamo', '')}",
         f"<b>Cartera:</b> {datos.get('cartera_nombre') or '—'}",
-        f"<b>Estado:</b> {datos.get('estado_prestamo', '')} · <b>Días en mora:</b> {datos.get('dias_mora', 0)}",
+        f"<b>Estado:</b> {datos.get('estado_prestamo', '')}",
     ]
     for line in meta_lines:
         story.append(Paragraph(line, meta_style))
@@ -210,8 +206,7 @@ def exportar_estado_cuenta_pdf(datos: dict) -> bytes:
         Paragraph(
             (
                 f"Capital: {_money_pdf(resumen.get('total_capital', '0'))} · "
-                f"Interés: {_money_pdf(resumen.get('total_interes', '0'))} · "
-                f"Mora: {_money_pdf(resumen.get('total_mora', '0'))}"
+                f"Interés: {_money_pdf(resumen.get('total_interes', '0'))}"
             ),
             meta_style,
         )

@@ -180,9 +180,8 @@ def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
     cliente = pago.id_prestamo.id_cliente
     capital = round_money(Decimal(pago.capital))
     interes = round_money(Decimal(pago.interes))
-    mora = round_money(Decimal(pago.mora))
     subtotal = round_money(capital + interes)
-    total_aplicado = round_money(subtotal + mora)
+    total_aplicado = subtotal
     efectivo_recibido = (
         round_money(Decimal(pago.monto_recibido_cliente))
         if pago.monto_recibido_cliente is not None
@@ -295,10 +294,7 @@ def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
             else:
                 cuota_n = item.get('cuota', '')
                 es_parcial = bool(item.get('parcial'))
-                mora_cuota = round_money(Decimal(str(item.get('mora', '0'))))
-                if mora_cuota > 0:
-                    producto_label = f'Cuota #{cuota_n} mora'
-                elif es_parcial:
+                if es_parcial:
                     producto_label = 'Abono parcial'
                 else:
                     producto_label = f'Cuota #{cuota_n}'
@@ -309,23 +305,13 @@ def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
     # Totales.
     pdf.setFont('Helvetica', detail_size)
     if efectivo_recibido is not None:
-        mora_total = round_money(
-            sum(
-                Decimal(str(item.get('mora', '0')))
-                for item in lineas_detalle
-            )
-            if lineas_detalle
-            else mora
-        )
-        totals: list[tuple[str, Decimal]] = []
-        if mora_total > 0:
-            totals.append(('MORA', mora_total))
-        totals.append(('EFECTIVO RECIBIDO', efectivo_recibido))
+        totals: list[tuple[str, Decimal]] = [
+            ('EFECTIVO RECIBIDO', efectivo_recibido),
+        ]
     else:
         totals = [
             ('OP. GRAVADAS', subtotal),
-            ('MORA', mora),
-            ('SUB TOTAL', subtotal),
+            ('SUBTOTAL', subtotal),
         ]
     for label, amount in totals:
         pdf.drawString(producto_x, y, label)
@@ -1425,7 +1411,6 @@ def _datos_historial_pagos_cobros(request) -> dict:
     filas = []
     tot_capital = Decimal('0.00')
     tot_interes = Decimal('0.00')
-    tot_mora = Decimal('0.00')
 
     for pg in qs:
         prestamo = pg.id_prestamo
@@ -1433,10 +1418,8 @@ def _datos_historial_pagos_cobros(request) -> dict:
         cartera = prestamo.id_cartera if prestamo else None
         capital = Decimal(pg.capital)
         interes = Decimal(pg.interes)
-        mora = Decimal(pg.mora)
         tot_capital += capital
         tot_interes += interes
-        tot_mora += mora
         filas.append(
             {
                 'id_pago': pg.id_pago,
@@ -1446,8 +1429,7 @@ def _datos_historial_pagos_cobros(request) -> dict:
                 'documento': pg.documento,
                 'capital': str(round_money(capital)),
                 'interes': str(round_money(interes)),
-                'mora': str(round_money(mora)),
-                'total': str(round_money(capital + interes + mora)),
+                'total': str(round_money(capital + interes)),
                 'id_prestamo': prestamo.id_prestamo if prestamo else None,
                 'numero_prestamo': prestamo.numero_prestamo if prestamo else '',
                 'nombre_cliente': cliente.nombre if cliente else '',
@@ -1456,7 +1438,7 @@ def _datos_historial_pagos_cobros(request) -> dict:
             }
         )
 
-    total_cobrado = round_money(tot_capital + tot_interes + tot_mora)
+    total_cobrado = round_money(tot_capital + tot_interes)
     return {
         'modo': (modo or 'dia').strip().lower(),
         'fecha_inicio': inicio.isoformat(),
@@ -1468,7 +1450,6 @@ def _datos_historial_pagos_cobros(request) -> dict:
             'registros': len(filas),
             'total_capital': str(round_money(tot_capital)),
             'total_interes': str(round_money(tot_interes)),
-            'total_mora': str(round_money(tot_mora)),
             'total_cobrado': str(total_cobrado),
         },
     }

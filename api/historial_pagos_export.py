@@ -44,7 +44,6 @@ COLUMNAS_EXCEL = (
     ('documento', 'Documento'),
     ('capital', 'Capital'),
     ('interes', 'Interés'),
-    ('mora', 'Mora'),
     ('total', 'Total'),
 )
 
@@ -118,9 +117,9 @@ def exportar_historial_pagos_xlsx(datos: dict) -> bytes:
             '',
             '',
             '',
+            '',
             resumen.get('total_capital', '0'),
             resumen.get('total_interes', '0'),
-            resumen.get('total_mora', '0'),
             resumen.get('total_cobrado', '0'),
         ]
     )
@@ -188,7 +187,7 @@ def exportar_historial_pagos_pdf(datos: dict) -> bytes:
     )
 
     table_data = [
-        ['Fecha', 'Hora', 'Cliente', 'DNI', 'Préstamo', 'Cartera', 'Doc.', 'Capital', 'Interés', 'Mora', 'Total'],
+        ['Fecha', 'Hora', 'Cliente', 'DNI', 'Préstamo', 'Cartera', 'Doc.', 'Capital', 'Interés', 'Total'],
     ]
     for fila in datos.get('filas', []):
         table_data.append(
@@ -202,7 +201,6 @@ def exportar_historial_pagos_pdf(datos: dict) -> bytes:
                 fila.get('documento') or '—',
                 _money_pdf(fila.get('capital', '0')),
                 _money_pdf(fila.get('interes', '0')),
-                _money_pdf(fila.get('mora', '0')),
                 _money_pdf(fila.get('total', '0')),
             ]
         )
@@ -219,12 +217,11 @@ def exportar_historial_pagos_pdf(datos: dict) -> bytes:
             f"{resumen.get('registros', 0)} reg.",
             _money_pdf(resumen.get('total_capital', '0')),
             _money_pdf(resumen.get('total_interes', '0')),
-            _money_pdf(resumen.get('total_mora', '0')),
             _money_pdf(resumen.get('total_cobrado', '0')),
         ]
     )
 
-    col_widths = [20 * mm, 16 * mm, 34 * mm, 22 * mm, 24 * mm, 26 * mm, 20 * mm, 20 * mm, 20 * mm, 16 * mm, 22 * mm]
+    col_widths = [22 * mm, 18 * mm, 36 * mm, 24 * mm, 26 * mm, 28 * mm, 22 * mm, 22 * mm, 22 * mm, 24 * mm]
     table = Table(table_data, colWidths=col_widths, repeatRows=1)
     table.setStyle(
         TableStyle(
