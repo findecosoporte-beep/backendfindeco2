@@ -73,6 +73,49 @@ class PrestamoSerializerTestCase(TestCase):
         serializer = PrestamoSerializer(data=self._build_payload())
         self.assertTrue(serializer.is_valid(), serializer.errors)
 
+    def test_rechaza_segundo_prestamo_activo_mismo_cliente(self):
+        Prestamo.objects.create(
+            numero_prestamo='PRE-ACTIVO',
+            id_cliente=self.cliente,
+            id_usuario=self.usuario,
+            id_cartera=self.cartera,
+            monto=Decimal('1000.00'),
+            plazo=6,
+            tasa_interes=Decimal('10.00'),
+            estado='activo',
+            forma_pago='semanal',
+            forma_desembolso='efectivo',
+            comision=Decimal('0.00'),
+            fecha_entrega=date.today(),
+            fecha_vencimiento=date.today() + timedelta(days=60),
+        )
+        serializer = PrestamoSerializer(data=self._build_payload(numero_prestamo='PRE-002'))
+        self.assertFalse(serializer.is_valid())
+        self.assertIn('id_cliente', serializer.errors)
+
+    def test_acepta_renovacion_si_anterior_esta_pagado(self):
+        Prestamo.objects.create(
+            numero_prestamo='PRE-PAGADO',
+            id_cliente=self.cliente,
+            id_usuario=self.usuario,
+            id_cartera=self.cartera,
+            monto=Decimal('1000.00'),
+            plazo=6,
+            tasa_interes=Decimal('10.00'),
+            estado='pagado',
+            forma_pago='semanal',
+            forma_desembolso='efectivo',
+            comision=Decimal('0.00'),
+            ciclos=0,
+            fecha_entrega=date.today() - timedelta(days=90),
+            fecha_vencimiento=date.today() - timedelta(days=30),
+        )
+        serializer = PrestamoSerializer(data=self._build_payload(numero_prestamo='PRE-REN-001'))
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        prestamo = serializer.save()
+        self.assertEqual(prestamo.ciclos, 1)
+        self.assertEqual(prestamo.numero_prestamo, 'PRE-REN-001')
+
 
 class RolePermissionIntegrationTestCase(APITestCase):
     """Pruebas de integracion para permisos por rol en endpoints DRF."""

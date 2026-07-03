@@ -5,6 +5,7 @@ from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.db import transaction
+from django.db.models import Max
 from rest_framework import serializers
 
 from .cobrador_scope import validar_cobro_por_cartera
@@ -80,6 +81,34 @@ def _resolver_cliente_en_attrs(attrs: dict, instance: Prestamo | None = None) ->
     if isinstance(cliente, Cliente):
         return cliente
     return Cliente.objects.filter(pk=cliente).first()
+
+
+ESTADOS_PRESTAMO_ACTIVO = frozenset({'activo', 'mora', 'pendiente_aprobacion'})
+
+
+def _validar_cliente_para_nuevo_prestamo(cliente: Cliente) -> None:
+    """Solo un préstamo abierto por cliente; renovación si los anteriores están cerrados."""
+    activos = Prestamo.objects.filter(id_cliente=cliente, estado__in=ESTADOS_PRESTAMO_ACTIVO)
+    if not activos.exists():
+        return
+    numeros = ', '.join(activos.values_list('numero_prestamo', flat=True)[:3])
+    raise serializers.ValidationError(
+        {
+            'id_cliente': (
+                f'El cliente tiene un préstamo activo o pendiente ({numeros}). '
+                'Debe estar pagado o cancelado para registrar uno nuevo con otro código.'
+            )
+        }
+    )
+
+
+def _ciclos_para_renovacion(cliente: Cliente) -> int:
+    """Ciclo 0 en el primer préstamo; en renovación, máximo histórico + 1."""
+    previos = Prestamo.objects.filter(id_cliente=cliente)
+    if not previos.exists():
+        return 0
+    max_ciclos = previos.aggregate(m=Max('ciclos'))['m'] or 0
+    return int(max_ciclos) + 1
 
 
 class ClienteSerializer(serializers.ModelSerializer):
@@ -496,10 +525,15 @@ class PrestamoSerializer(serializers.ModelSerializer):
                         )
                     }
                 )
+            if cliente is not None:
+                _validar_cliente_para_nuevo_prestamo(cliente)
         return attrs
 
     @transaction.atomic
     def create(self, validated_data):
+        cliente = validated_data.get('id_cliente')
+        if cliente is not None:
+            validated_data['ciclos'] = _ciclos_para_renovacion(cliente)
         prestamo = super().create(validated_data)
 
         monto = Decimal(prestamo.monto)
