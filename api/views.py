@@ -120,24 +120,37 @@ def _truncar_texto_ancho_pdf(pdf, texto: str, font: str, size: float, max_width:
 
 
 def _columnas_factura_ticket(ticket_w: float, is_80mm: bool, x0: float = 0) -> dict[str, float]:
-    """Posiciones X de columnas del detalle (mm desde el borde izquierdo del ticket)."""
-    pad = 2 * mm
+    """Cuadrícula del detalle centrada en el ancho del ticket."""
+    margin_side = 4 * mm if is_80mm else 3.5 * mm
+    table_left = x0 + margin_side
+    table_right = x0 + ticket_w - margin_side
+    table_w = table_right - table_left
+
     if is_80mm:
-        return {
-            'pad': pad,
-            'producto_x': x0 + pad,
-            'producto_max_w': 36 * mm,
-            'cant_x': x0 + 46 * mm,
-            'precio_x': x0 + 62 * mm,
-            'importe_x': x0 + ticket_w - pad,
-        }
+        ratios = (0.40, 0.10, 0.24, 0.26)
+    else:
+        ratios = (0.34, 0.12, 0.27, 0.27)
+
+    w_prod, w_cant, w_prec, w_imp = (table_w * r for r in ratios)
+    cant_left = table_left + w_prod
+    cant_right = cant_left + w_cant
+    prec_left = cant_right
+    prec_right = prec_left + w_prec
+    imp_left = prec_right
+    imp_right = table_right
+    inner_pad = 0.4 * mm
+
     return {
-        'pad': pad,
-        'producto_x': x0 + pad,
-        'producto_max_w': 18 * mm,
-        'cant_x': x0 + 26 * mm,
-        'precio_x': x0 + 40 * mm,
-        'importe_x': x0 + ticket_w - pad,
+        'pad': margin_side,
+        'table_left': table_left,
+        'table_right': table_right,
+        'producto_x': table_left,
+        'producto_max_w': max(w_prod - inner_pad, 10 * mm),
+        'cant_center_x': (cant_left + cant_right) / 2,
+        'precio_x': prec_right - inner_pad,
+        'precio_center_x': (prec_left + prec_right) / 2,
+        'importe_x': imp_right - inner_pad,
+        'importe_center_x': (imp_left + imp_right) / 2,
     }
 
 
@@ -186,9 +199,11 @@ def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
     pad = cols['pad']
     producto_x = cols['producto_x']
     producto_max_w = cols['producto_max_w']
-    qty_x = cols['cant_x']
+    cant_center_x = cols['cant_center_x']
     price_x = cols['precio_x']
+    price_center_x = cols['precio_center_x']
     importe_x = cols['importe_x']
+    importe_center_x = cols['importe_center_x']
 
     def center_text(text: str, size: int = 9, bold: bool = False, step_mm: float = 4.6) -> None:
         nonlocal y
@@ -242,9 +257,9 @@ def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
     detail_font = 'Helvetica'
     pdf.setFont(header_font, header_size)
     pdf.drawString(producto_x, y, 'Producto')
-    pdf.drawRightString(qty_x, y, 'Cant.')
-    pdf.drawRightString(price_x, y, 'Precio')
-    pdf.drawRightString(importe_x, y, 'Importe')
+    pdf.drawCentredString(cant_center_x, y, 'Cant.')
+    pdf.drawCentredString(price_center_x, y, 'Precio')
+    pdf.drawCentredString(importe_center_x, y, 'Importe')
     y -= 3 * mm
     line()
 
@@ -257,7 +272,7 @@ def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
         )
         monto_txt = f'{importe_linea:,.2f}'
         pdf.drawString(producto_x, y, etiqueta)
-        pdf.drawRightString(qty_x, y, '1')
+        pdf.drawCentredString(cant_center_x, y, '1')
         pdf.drawRightString(price_x, y, monto_txt)
         pdf.drawRightString(importe_x, y, monto_txt)
         y -= 4.8 * mm
