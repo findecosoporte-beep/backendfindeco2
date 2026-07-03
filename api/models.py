@@ -305,6 +305,27 @@ class Pago(models.Model):
     interes = models.DecimalField(max_digits=12, decimal_places=2)
     mora = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     saldo = models.DecimalField(max_digits=12, decimal_places=2)
+    monto_recibido_cliente = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text='Efectivo entregado por el cliente en este cobro (factura).',
+    )
+    detalle_distribucion = models.JSONField(
+        null=True,
+        blank=True,
+        help_text='Desglose por cuota cuando el cobro se reparte en varias líneas.',
+    )
+    id_pago_factura = models.ForeignKey(
+        'self',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        db_column='id_pago_factura',
+        related_name='pagos_mismo_cobro',
+        help_text='Pago maestro cuya factura consolida este abono (cobros repartidos).',
+    )
 
     class Meta:
         """Mapeo ORM: tabla `pagos` y orden por fecha e id."""

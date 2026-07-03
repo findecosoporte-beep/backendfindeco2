@@ -102,6 +102,19 @@ from .serializers import (
 AUTH_PERMISSION_CLASSES = (RoleBasedAccessPermission,)
 
 
+def _resolver_pago_factura(pago: Pago) -> Pago:
+    """Un solo ticket: líneas hijas reutilizan la factura del pago maestro."""
+    if pago.monto_recibido_cliente is not None:
+        return pago
+    maestro_id = getattr(pago, 'id_pago_factura_id', None)
+    if maestro_id:
+        return Pago.objects.select_related(
+            'id_prestamo',
+            'id_prestamo__id_cliente',
+        ).get(pk=maestro_id)
+    return pago
+
+
 def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
     """Genera un PDF de factura con estilo ticket (58mm u 80mm)."""
     buffer = io.BytesIO()
@@ -116,7 +129,17 @@ def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
     interes = round_money(Decimal(pago.interes))
     mora = round_money(Decimal(pago.mora))
     subtotal = round_money(capital + interes)
-    total_pagado = round_money(subtotal + mora)
+    total_aplicado = round_money(subtotal + mora)
+    efectivo_recibido = (
+        round_money(Decimal(pago.monto_recibido_cliente))
+        if pago.monto_recibido_cliente is not None
+        else None
+    )
+    total_venta = efectivo_recibido if efectivo_recibido is not None else total_aplicado
+    detalle_distribucion = pago.detalle_distribucion or []
+    es_abono_parcial = any(
+        isinstance(item, dict) and item.get('parcial') for item in detalle_distribucion
+    )
 
     x0 = 0
     y = height - 12 * mm
@@ -181,24 +204,61 @@ def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
 
     detail_size = 8.5 if is_80mm else 7.6
     pdf.setFont('Helvetica', detail_size)
-    unit_price = round_money(total_pagado)
-    producto_label = f'CUOTA {pago.documento or "PAGO"}'
-    if len(producto_label) > 18:
-        producto_label = f'{producto_label[:18]}...'
-    pdf.drawString(producto_x, y, producto_label)
-    pdf.drawRightString(qty_x, y, '1.0')
-    pdf.drawRightString(price_x, y, f'{unit_price:,.2f}')
-    pdf.drawRightString(importe_x, y, f'{total_pagado:,.2f}')
-    y -= 4.8 * mm
+    lineas_detalle = [
+        item for item in detalle_distribucion if isinstance(item, dict)
+    ]
+    if not lineas_detalle:
+        total_linea = total_venta
+        producto_label = f'COBRO {pago.documento or "PAGO"}'
+        if len(producto_label) > 18:
+            producto_label = f'{producto_label[:18]}...'
+        pdf.drawString(producto_x, y, producto_label)
+        pdf.drawRightString(qty_x, y, '1.0')
+        pdf.drawRightString(price_x, y, f'{total_linea:,.2f}')
+        pdf.drawRightString(importe_x, y, f'{total_linea:,.2f}')
+        y -= 4.8 * mm
+    else:
+        for item in lineas_detalle:
+            cuota_n = item.get('cuota', '')
+            es_parcial = bool(item.get('parcial'))
+            total_cuota = round_money(Decimal(str(item.get('total', '0'))))
+            mora_cuota = round_money(Decimal(str(item.get('mora', '0'))))
+            if mora_cuota > 0:
+                producto_label = f'CUOTA #{cuota_n} MORA'
+            elif es_parcial:
+                producto_label = f'CUOTA #{cuota_n} PARCIAL'
+            else:
+                producto_label = f'CUOTA #{cuota_n}'
+            if len(producto_label) > 18:
+                producto_label = f'{producto_label[:18]}...'
+            pdf.drawString(producto_x, y, producto_label)
+            pdf.drawRightString(qty_x, y, '1.0')
+            pdf.drawRightString(price_x, y, f'{total_cuota:,.2f}')
+            pdf.drawRightString(importe_x, y, f'{total_cuota:,.2f}')
+            y -= 4.8 * mm
     line()
 
     # Totales.
     pdf.setFont('Helvetica', detail_size)
-    totals = [
-        ('OP. GRAVADAS', subtotal),
-        ('MORA', mora),
-        ('SUB TOTAL', subtotal),
-    ]
+    if efectivo_recibido is not None:
+        mora_total = round_money(
+            sum(
+                Decimal(str(item.get('mora', '0')))
+                for item in lineas_detalle
+            )
+            if lineas_detalle
+            else mora
+        )
+        totals: list[tuple[str, Decimal]] = []
+        if mora_total > 0:
+            totals.append(('MORA', mora_total))
+        totals.append(('EFECTIVO RECIBIDO', efectivo_recibido))
+    else:
+        totals = [
+            ('OP. GRAVADAS', subtotal),
+            ('MORA', mora),
+            ('SUB TOTAL', subtotal),
+        ]
     for label, amount in totals:
         pdf.drawString(producto_x, y, label)
         pdf.drawRightString(importe_x, y, f'L/ {amount:,.2f}')
@@ -206,8 +266,12 @@ def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
 
     pdf.setFont('Helvetica-Bold', 10 if is_80mm else 8.8)
     pdf.drawString(producto_x, y, 'TOTAL VENTA')
-    pdf.drawRightString(importe_x, y, f'L/ {total_pagado:,.2f}')
+    pdf.drawRightString(importe_x, y, f'L/ {total_venta:,.2f}')
     y -= 5.5 * mm
+    if es_abono_parcial:
+        pdf.setFont('Helvetica', detail_size)
+        pdf.drawString(producto_x, y, 'Abono parcial a la cuota')
+        y -= 4.2 * mm
     line()
 
     # Datos extra y QR.
@@ -220,7 +284,7 @@ def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
 
     qr_payload = (
         f"PAGO:{pago.id_pago}|PRESTAMO:{pago.id_prestamo.numero_prestamo}|"
-        f"CLIENTE:{cliente.dni}|FECHA:{pago.fecha_pago.isoformat()}|TOTAL:{total_pagado}"
+        f"CLIENTE:{cliente.dni}|FECHA:{pago.fecha_pago.isoformat()}|TOTAL:{total_venta}"
     )
     qr_code = qr.QrCodeWidget(qr_payload)
     bounds = qr_code.getBounds()
@@ -1376,7 +1440,7 @@ class PagoViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['get'], url_path='factura-pdf')
     def factura_pdf(self, request, pk=None):
         """Retorna un PDF imprimible de factura para un pago."""
-        pago = self.get_object()
+        pago = _resolver_pago_factura(self.get_object())
         ticket_format = request.query_params.get('ticket', '58').strip()
         if ticket_format not in ('58', '80'):
             ticket_format = '58'

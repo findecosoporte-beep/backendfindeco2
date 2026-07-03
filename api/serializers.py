@@ -11,6 +11,7 @@ from rest_framework import serializers
 from .cobrador_scope import validar_cobro_por_cartera
 from .core.cuotas import extract_cuota_numero_from_documento
 from .core.distribucion_pago import (
+    CUOTA_PAGADA_TOLERANCIA,
     abonado_por_cuota_desde_pagos,
     cuota_esta_pagada,
     distribuir_monto_en_cuotas,
@@ -710,6 +711,9 @@ class PagoSerializer(serializers.ModelSerializer):
     @transaction.atomic
     def create(self, validated_data):
         monto_recibido = validated_data.pop('monto_recibido', None)
+        monto_recibido_cliente = (
+            round_money(Decimal(monto_recibido)) if monto_recibido is not None else None
+        )
         prestamo = validated_data.get('id_prestamo')
         documento = validated_data.get('documento')
         cuota_numero = extract_cuota_numero_from_documento(documento)
@@ -758,18 +762,6 @@ class PagoSerializer(serializers.ModelSerializer):
             if lineas:
                 pagos_creados: list[Pago] = []
                 fecha_pago = validated_data['fecha_pago']
-                for linea in lineas:
-                    pagos_creados.append(
-                        Pago.objects.create(
-                            id_prestamo=prestamo,
-                            fecha_pago=fecha_pago,
-                            documento=linea['documento'],
-                            capital=linea['capital'],
-                            interes=linea['interes'],
-                            mora=linea['mora'],
-                            saldo=linea['saldo'],
-                        )
-                    )
                 self.distribucion_resumen = [
                     {
                         'cuota': linea['numero_cuota'],
@@ -782,6 +774,44 @@ class PagoSerializer(serializers.ModelSerializer):
                     }
                     for linea in lineas
                 ]
+                detalle_factura = None
+                if monto_recibido_cliente is not None:
+                    detalle_factura = [dict(item) for item in self.distribucion_resumen]
+                    if (
+                        len(lineas) == 1
+                        and cuota_numero is not None
+                        and fila_inicio is not None
+                    ):
+                        pendiente_antes = pendiente_cuota(
+                            fila_inicio,
+                            abonado_previo.get(cuota_numero, Decimal('0.00')),
+                        )
+                        cobrado_cuota = round_money(monto_distribuir + mora)
+                        if cobrado_cuota < pendiente_antes - CUOTA_PAGADA_TOLERANCIA:
+                            detalle_factura[0]['parcial'] = True
+                pago_maestro: Pago | None = None
+                for idx, linea in enumerate(lineas):
+                    create_kwargs = {
+                        'id_prestamo': prestamo,
+                        'fecha_pago': fecha_pago,
+                        'documento': linea['documento'],
+                        'capital': linea['capital'],
+                        'interes': linea['interes'],
+                        'mora': linea['mora'],
+                        'saldo': linea['saldo'],
+                    }
+                    if idx == 0 and monto_recibido_cliente is not None:
+                        create_kwargs['monto_recibido_cliente'] = monto_recibido_cliente
+                        create_kwargs['detalle_distribucion'] = detalle_factura
+                    elif pago_maestro is not None:
+                        create_kwargs['id_pago_factura'] = pago_maestro
+                    pago_linea = Pago.objects.create(**create_kwargs)
+                    if idx == 0:
+                        pago_maestro = pago_linea
+                    pagos_creados.append(pago_linea)
+                if pago_maestro is not None and len(pagos_creados) > 1:
+                    pago_maestro.saldo = pagos_creados[-1].saldo
+                    pago_maestro.save(update_fields=['saldo'])
                 ultimo = pagos_creados[-1]
                 self._sync_prestamo_state(prestamo, ultimo)
                 return pagos_creados[0]
@@ -795,6 +825,9 @@ class PagoSerializer(serializers.ModelSerializer):
                 Decimal(validated_data.get('interes', 0)),
                 mora,
             )
+
+        if monto_recibido_cliente is not None:
+            validated_data['monto_recibido_cliente'] = monto_recibido_cliente
 
         pago = super().create(validated_data)
         self.distribucion_resumen = None

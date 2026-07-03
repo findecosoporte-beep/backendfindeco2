@@ -316,6 +316,49 @@ class RolePermissionIntegrationTestCase(APITestCase):
         self.assertEqual(response_80['Content-Type'], 'application/pdf')
         self.assertIn('80mm', response_80['Content-Disposition'])
 
+    def test_factura_pdf_refleja_monto_recibido_cliente(self):
+        """La factura se genera con el efectivo entregado (parcial o excedente)."""
+        self._auth_with_role(role='supervisor', email='pdf.recibido@test.com')
+        cliente = Cliente.objects.create(nombre='Cliente Recibido', dni='0801-2000-00030')
+        cartera = Cartera.objects.create(nombre='Cartera Recibido', dia_cobro='lunes')
+        usuario_operativo = Usuario.objects.get(correo='pdf.recibido@test.com')
+        payload_prestamo = {
+            'numero_prestamo': 'PRE-REC-001',
+            'id_cliente': cliente.id_cliente,
+            'id_usuario': usuario_operativo.id_usuario,
+            'id_cartera': cartera.id_cartera,
+            'monto': '5000.00',
+            'plazo': 6,
+            'tasa_interes': '10.00',
+            'estado': 'activo',
+            'forma_pago': 'semanal',
+            'forma_desembolso': 'efectivo',
+            'comision': '0.00',
+            'fecha_entrega': date(2026, 6, 21).isoformat(),
+        }
+        self.client.post('/api/v1/prestamos/', data=payload_prestamo, format='json')
+        prestamo = Prestamo.objects.get(numero_prestamo='PRE-REC-001')
+        cuota_1 = PrestamoCuota.objects.get(id_prestamo=prestamo, numero_cuota=1)
+
+        payload_pago = {
+            'id_prestamo': prestamo.id_prestamo,
+            'fecha_pago': date.today().isoformat(),
+            'documento': 'Cuota 1',
+            'capital': str(cuota_1.capital_programado),
+            'interes': str(cuota_1.interes_programado),
+            'mora': '0.00',
+            'saldo': '0.00',
+            'monto_recibido': '2500.00',
+        }
+        response = self.client.post('/api/v1/pagos/', data=payload_pago, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        pago = Pago.objects.filter(id_prestamo=prestamo).order_by('id_pago').first()
+        self.assertEqual(Decimal(pago.monto_recibido_cliente), Decimal('2500.00'))
+
+        pdf_response = self.client.get(f'/api/v1/pagos/{pago.id_pago}/factura-pdf/')
+        self.assertEqual(pdf_response.status_code, status.HTTP_200_OK)
+        self.assertTrue(pdf_response.content.startswith(b'%PDF'))
+
     def test_estado_cuenta_pdf_prestamo_retorna_pdf(self):
         self._auth_with_role(role='supervisor', email='pdf.estado@test.com')
         cliente = Cliente.objects.create(
@@ -460,6 +503,16 @@ class RolePermissionIntegrationTestCase(APITestCase):
         self.assertEqual(pagos.count(), 2)
         self.assertEqual(pagos[0].documento, 'Cuota 1')
         self.assertEqual(pagos[1].documento, 'Cuota 2')
+        self.assertEqual(Decimal(pagos[0].monto_recibido_cliente), Decimal('2000.00'))
+        self.assertEqual(len(pagos[0].detalle_distribucion or []), 2)
+        self.assertEqual(pagos[1].id_pago_factura_id, pagos[0].id_pago)
+
+        pdf_hijo = self.client.get(f'/api/v1/pagos/{pagos[1].id_pago}/factura-pdf/')
+        pdf_maestro = self.client.get(f'/api/v1/pagos/{pagos[0].id_pago}/factura-pdf/')
+        self.assertEqual(pdf_hijo.status_code, status.HTTP_200_OK)
+        self.assertEqual(pdf_maestro.status_code, status.HTTP_200_OK)
+        self.assertTrue(pdf_hijo.content.startswith(b'%PDF'))
+        self.assertTrue(pdf_maestro.content.startswith(b'%PDF'))
 
         total_abonado = sum(
             Decimal(p.capital) + Decimal(p.interes) + Decimal(p.mora) for p in pagos
@@ -508,7 +561,7 @@ class RolePermissionIntegrationTestCase(APITestCase):
         self.assertEqual(response_prestamo.status_code, status.HTTP_201_CREATED)
         prestamo = Prestamo.objects.get(numero_prestamo='PRE-PAR-001')
         cuota_1 = PrestamoCuota.objects.get(id_prestamo=prestamo, numero_cuota=1)
-        self.assertEqual(cuota_1.interes_programado, Decimal('250.00'))
+        self.assertEqual(cuota_1.interes_programado, Decimal('125.00'))
         abono_parcial = Decimal('500.00')
 
         payload_pago = {
@@ -528,6 +581,9 @@ class RolePermissionIntegrationTestCase(APITestCase):
 
         pago = Pago.objects.get(id_prestamo=prestamo)
         self.assertEqual(Decimal(pago.capital) + Decimal(pago.interes), abono_parcial)
+        self.assertEqual(Decimal(pago.monto_recibido_cliente), abono_parcial)
+        self.assertTrue(pago.detalle_distribucion)
+        self.assertTrue(pago.detalle_distribucion[0].get('parcial'))
         pendiente_cuota_1 = cuota_1.total_programado - abono_parcial
 
         reporte = self.client.get(
