@@ -1408,11 +1408,24 @@ def _datos_historial_pagos_cobros(request) -> dict:
         if cartera:
             cartera_etiqueta = cartera.nombre
 
+    pagos_list = list(qs)
+    prestamo_ids = {pg.id_prestamo_id for pg in pagos_list if pg.id_prestamo_id}
+    programada_por_prestamo_cuota: dict[tuple[int, int], date] = {}
+    if prestamo_ids:
+        for cuota in PrestamoCuota.objects.filter(id_prestamo_id__in=prestamo_ids).only(
+            'id_prestamo_id',
+            'numero_cuota',
+            'fecha_programada',
+        ):
+            programada_por_prestamo_cuota[(cuota.id_prestamo_id, cuota.numero_cuota)] = (
+                cuota.fecha_programada
+            )
+
     filas = []
     tot_capital = Decimal('0.00')
     tot_interes = Decimal('0.00')
 
-    for pg in qs:
+    for pg in pagos_list:
         prestamo = pg.id_prestamo
         cliente = prestamo.id_cliente if prestamo else None
         cartera = prestamo.id_cartera if prestamo else None
@@ -1420,9 +1433,16 @@ def _datos_historial_pagos_cobros(request) -> dict:
         interes = Decimal(pg.interes)
         tot_capital += capital
         tot_interes += interes
+        cuota_n = extract_cuota_numero_from_documento(pg.documento)
+        fecha_programada = ''
+        if prestamo and cuota_n is not None:
+            prog = programada_por_prestamo_cuota.get((prestamo.id_prestamo, cuota_n))
+            if prog is not None:
+                fecha_programada = prog.isoformat()
         filas.append(
             {
                 'id_pago': pg.id_pago,
+                'fecha_programada': fecha_programada,
                 'fecha_pago': pg.fecha_pago.isoformat(),
                 'hora_pago': formato_hora_hn(cobrado_en_efectivo(pg)),
                 'cobrado_en': pg.cobrado_en.isoformat() if pg.cobrado_en else None,

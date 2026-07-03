@@ -763,7 +763,6 @@ class PagoSerializer(serializers.ModelSerializer):
                 abonado_previo,
             )
             if lineas:
-                pagos_creados: list[Pago] = []
                 fecha_pago = validated_data['fecha_pago']
 
                 def _linea_distribucion_resumen(linea: dict) -> dict:
@@ -783,36 +782,31 @@ class PagoSerializer(serializers.ModelSerializer):
                     return item
 
                 self.distribucion_resumen = [_linea_distribucion_resumen(linea) for linea in lineas]
-                detalle_factura = None
-                if monto_recibido_cliente is not None:
-                    detalle_factura = [dict(item) for item in self.distribucion_resumen]
-                pago_maestro: Pago | None = None
-                for idx, linea in enumerate(lineas):
-                    create_kwargs = {
-                        'id_prestamo': prestamo,
-                        'fecha_pago': fecha_pago,
-                        'cobrado_en': cobrado_en,
-                        'documento': linea['documento'],
-                        'capital': linea['capital'],
-                        'interes': linea['interes'],
-                        'mora': linea['mora'],
-                        'saldo': linea['saldo'],
-                    }
-                    if idx == 0 and monto_recibido_cliente is not None:
-                        create_kwargs['monto_recibido_cliente'] = monto_recibido_cliente
-                        create_kwargs['detalle_distribucion'] = detalle_factura
-                    elif pago_maestro is not None:
-                        create_kwargs['id_pago_factura'] = pago_maestro
-                    pago_linea = Pago.objects.create(**create_kwargs)
-                    if idx == 0:
-                        pago_maestro = pago_linea
-                    pagos_creados.append(pago_linea)
-                if pago_maestro is not None and len(pagos_creados) > 1:
-                    pago_maestro.saldo = pagos_creados[-1].saldo
-                    pago_maestro.save(update_fields=['saldo'])
-                ultimo = pagos_creados[-1]
-                self._sync_prestamo_state(prestamo, ultimo)
-                return pagos_creados[0]
+                detalle_factura = [dict(item) for item in self.distribucion_resumen]
+                capital_total = round_money(sum((linea['capital'] for linea in lineas), Decimal('0.00')))
+                interes_total = round_money(sum((linea['interes'] for linea in lineas), Decimal('0.00')))
+                mora_total = round_money(sum((linea['mora'] for linea in lineas), Decimal('0.00')))
+                saldo_final = lineas[-1]['saldo']
+                # El documento del pago único siempre referencia la cuota (no el abono a capital),
+                # para que abonado_por_cuota_desde_pagos lo asocie correctamente.
+                documento_principal = next(
+                    (linea['documento'] for linea in lineas if not linea.get('abono_capital')),
+                    lineas[0]['documento'],
+                )
+                pago_unico = Pago.objects.create(
+                    id_prestamo=prestamo,
+                    fecha_pago=fecha_pago,
+                    cobrado_en=cobrado_en,
+                    documento=documento_principal,
+                    capital=capital_total,
+                    interes=interes_total,
+                    mora=mora_total,
+                    saldo=saldo_final,
+                    monto_recibido_cliente=monto_recibido_cliente,
+                    detalle_distribucion=detalle_factura,
+                )
+                self._sync_prestamo_state(prestamo, pago_unico)
+                return pago_unico
 
         if plan_rows and cuota_numero is not None:
             validated_data['saldo'] = saldo_pendiente_tras_abono(

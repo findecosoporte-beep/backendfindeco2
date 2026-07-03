@@ -21,10 +21,11 @@ def tasa_semanal_negocio(semanas: int) -> Decimal:
     - 6 semanas: 2.5% semanal (15% total).
     - 8 semanas: 2.5% semanal (20% total).
     - 10 semanas: 2.5% semanal (25% total).
+    - 12 semanas: 2.5% semanal (30% total).
     - 16 semanas: 2.5% semanal (40% total).
     - Resto: 10% semanal.
     """
-    if semanas in (6, 8, 10, 16):
+    if semanas in (6, 8, 10, 12, 16):
         return Decimal('2.5')
     return Decimal('10')
 
