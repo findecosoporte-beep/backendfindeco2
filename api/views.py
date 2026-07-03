@@ -109,6 +109,38 @@ from .serializers import (
 AUTH_PERMISSION_CLASSES = (RoleBasedAccessPermission,)
 
 
+def _truncar_texto_ancho_pdf(pdf, texto: str, font: str, size: float, max_width: float) -> str:
+    """Recorta texto con elipsis si excede el ancho disponible en el PDF."""
+    if pdf.stringWidth(texto, font, size) <= max_width:
+        return texto
+    recorte = texto
+    while len(recorte) > 1 and pdf.stringWidth(f'{recorte}...', font, size) > max_width:
+        recorte = recorte[:-1]
+    return f'{recorte}...'
+
+
+def _columnas_factura_ticket(ticket_w: float, is_80mm: bool, x0: float = 0) -> dict[str, float]:
+    """Posiciones X de columnas del detalle (mm desde el borde izquierdo del ticket)."""
+    pad = 2 * mm
+    if is_80mm:
+        return {
+            'pad': pad,
+            'producto_x': x0 + pad,
+            'producto_max_w': 36 * mm,
+            'cant_x': x0 + 46 * mm,
+            'precio_x': x0 + 62 * mm,
+            'importe_x': x0 + ticket_w - pad,
+        }
+    return {
+        'pad': pad,
+        'producto_x': x0 + pad,
+        'producto_max_w': 18 * mm,
+        'cant_x': x0 + 26 * mm,
+        'precio_x': x0 + 40 * mm,
+        'importe_x': x0 + ticket_w - pad,
+    }
+
+
 def _resolver_pago_factura(pago: Pago) -> Pago:
     """Un solo ticket: líneas hijas reutilizan la factura del pago maestro."""
     if pago.monto_recibido_cliente is not None:
@@ -150,6 +182,13 @@ def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
 
     x0 = 0
     y = height - 12 * mm
+    cols = _columnas_factura_ticket(ticket_w, is_80mm, x0)
+    pad = cols['pad']
+    producto_x = cols['producto_x']
+    producto_max_w = cols['producto_max_w']
+    qty_x = cols['cant_x']
+    price_x = cols['precio_x']
+    importe_x = cols['importe_x']
 
     def center_text(text: str, size: int = 9, bold: bool = False, step_mm: float = 4.6) -> None:
         nonlocal y
@@ -186,25 +225,22 @@ def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
 
     body_size = 9 if is_80mm else 7.8
     pdf.setFont('Helvetica', body_size)
-    pdf.drawString(x0 + 1 * mm, y, f'Senor(es): {cliente.nombre}')
+    pdf.drawString(producto_x, y, f'Senor(es): {cliente.nombre}')
     y -= 5 * mm
-    pdf.drawString(x0 + 1 * mm, y, f'RUC/DNI: {cliente.dni}')
+    pdf.drawString(producto_x, y, f'RUC/DNI: {cliente.dni}')
     y -= 5 * mm
     momento_cobro = cobrado_en_efectivo(pago)
-    pdf.drawString(x0 + 1 * mm, y, f'Fecha cobro: {formato_fecha_hn(pago.fecha_pago)}')
+    pdf.drawString(producto_x, y, f'Fecha cobro: {formato_fecha_hn(pago.fecha_pago)}')
     y -= 5 * mm
-    pdf.drawString(x0 + 1 * mm, y, f'Hora registro: {formato_hora_hn(momento_cobro)}')
+    pdf.drawString(producto_x, y, f'Hora registro: {formato_hora_hn(momento_cobro)}')
     y -= 3 * mm
     line()
 
-    # Encabezado de detalle tipo POS (columnas relativas al ancho del ticket).
     header_size = 8.5 if is_80mm else 7.6
-    right_margin_x = x0 + ticket_w - 1 * mm
-    importe_x = right_margin_x
-    price_x = x0 + (ticket_w * 0.78)
-    qty_x = x0 + (ticket_w * 0.62)
-    producto_x = x0 + 1 * mm
-    pdf.setFont('Helvetica-Bold', header_size)
+    detail_size = header_size
+    header_font = 'Helvetica-Bold'
+    detail_font = 'Helvetica'
+    pdf.setFont(header_font, header_size)
     pdf.drawString(producto_x, y, 'Producto')
     pdf.drawRightString(qty_x, y, 'Cant.')
     pdf.drawRightString(price_x, y, 'Precio')
@@ -212,21 +248,26 @@ def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
     y -= 3 * mm
     line()
 
-    detail_size = 8.5 if is_80mm else 7.6
-    pdf.setFont('Helvetica', detail_size)
+    pdf.setFont(detail_font, detail_size)
+
+    def dibujar_linea_detalle(producto_label: str, importe_linea: Decimal) -> None:
+        nonlocal y
+        etiqueta = _truncar_texto_ancho_pdf(
+            pdf, producto_label, detail_font, detail_size, producto_max_w,
+        )
+        monto_txt = f'{importe_linea:,.2f}'
+        pdf.drawString(producto_x, y, etiqueta)
+        pdf.drawRightString(qty_x, y, '1')
+        pdf.drawRightString(price_x, y, monto_txt)
+        pdf.drawRightString(importe_x, y, monto_txt)
+        y -= 4.8 * mm
+
     lineas_detalle = [
         item for item in detalle_distribucion if isinstance(item, dict)
     ]
     if not lineas_detalle:
-        total_linea = total_venta
         producto_label = f'COBRO {pago.documento or "PAGO"}'
-        if len(producto_label) > 18:
-            producto_label = f'{producto_label[:18]}...'
-        pdf.drawString(producto_x, y, producto_label)
-        pdf.drawRightString(qty_x, y, '1.0')
-        pdf.drawRightString(price_x, y, f'{total_linea:,.2f}')
-        pdf.drawRightString(importe_x, y, f'{total_linea:,.2f}')
-        y -= 4.8 * mm
+        dibujar_linea_detalle(producto_label, total_venta)
     else:
         for item in lineas_detalle:
             cuota_n = item.get('cuota', '')
@@ -239,13 +280,7 @@ def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
                 producto_label = f'CUOTA #{cuota_n} PARCIAL'
             else:
                 producto_label = f'CUOTA #{cuota_n}'
-            if len(producto_label) > 18:
-                producto_label = f'{producto_label[:18]}...'
-            pdf.drawString(producto_x, y, producto_label)
-            pdf.drawRightString(qty_x, y, '1.0')
-            pdf.drawRightString(price_x, y, f'{total_cuota:,.2f}')
-            pdf.drawRightString(importe_x, y, f'{total_cuota:,.2f}')
-            y -= 4.8 * mm
+            dibujar_linea_detalle(producto_label, total_cuota)
     line()
 
     # Totales.
