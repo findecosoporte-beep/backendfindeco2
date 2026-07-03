@@ -129,7 +129,7 @@ def _columnas_factura_ticket(ticket_w: float, is_80mm: bool, x0: float = 0) -> d
     if is_80mm:
         ratios = (0.40, 0.10, 0.24, 0.26)
     else:
-        ratios = (0.34, 0.12, 0.27, 0.27)
+        ratios = (0.42, 0.08, 0.25, 0.25)
 
     w_prod, w_cant, w_prec, w_imp = (table_w * r for r in ratios)
     cant_left = table_left + w_prod
@@ -145,7 +145,7 @@ def _columnas_factura_ticket(ticket_w: float, is_80mm: bool, x0: float = 0) -> d
         'table_left': table_left,
         'table_right': table_right,
         'producto_x': table_left,
-        'producto_max_w': max(w_prod - inner_pad, 10 * mm),
+        'producto_max_w': max(cant_left - table_left - 0.6 * mm, 10 * mm),
         'cant_center_x': (cant_left + cant_right) / 2,
         'precio_x': prec_right - inner_pad,
         'precio_center_x': (prec_left + prec_right) / 2,
@@ -286,17 +286,17 @@ def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
     else:
         for item in lineas_detalle:
             if item.get('abono_capital'):
-                producto_label = 'ABONO A CAPITAL'
+                producto_label = 'Abono a capital'
             else:
                 cuota_n = item.get('cuota', '')
                 es_parcial = bool(item.get('parcial'))
                 mora_cuota = round_money(Decimal(str(item.get('mora', '0'))))
                 if mora_cuota > 0:
-                    producto_label = f'CUOTA #{cuota_n} MORA'
+                    producto_label = f'Cuota #{cuota_n} mora'
                 elif es_parcial:
-                    producto_label = 'ABONO PARCIAL'
+                    producto_label = 'Abono parcial'
                 else:
-                    producto_label = f'CUOTA #{cuota_n}'
+                    producto_label = f'Cuota #{cuota_n}'
             total_cuota = round_money(Decimal(str(item.get('total', '0'))))
             dibujar_linea_detalle(producto_label, total_cuota)
     line()
