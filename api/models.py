@@ -36,6 +36,7 @@ class Cliente(models.Model):
         blank=True,
         help_text='Día de la semana preferido para visita o cobro al cliente.',
     )
+    creado_en = models.DateTimeField(auto_now_add=True, null=True, blank=True)
 
     class Meta:
         """Mapeo ORM: tabla `clientes` y orden por id."""
@@ -238,6 +239,7 @@ class Prestamo(models.Model):
     categoria = models.CharField(max_length=50, null=True, blank=True)
     fecha_entrega = models.DateField()
     fecha_vencimiento = models.DateField()
+    creado_en = models.DateTimeField(auto_now_add=True, null=True, blank=True)
 
     class Meta:
         """Mapeo ORM: tabla `prestamos` y orden descendente por id."""
@@ -300,6 +302,11 @@ class Pago(models.Model):
     id_pago = models.AutoField(primary_key=True)
     id_prestamo = models.ForeignKey(Prestamo, on_delete=models.RESTRICT, db_column='id_prestamo')
     fecha_pago = models.DateField()
+    cobrado_en = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text='Fecha y hora en que se registró el cobro (factura y auditoría).',
+    )
     documento = models.CharField(max_length=50, null=True, blank=True)
     capital = models.DecimalField(max_digits=12, decimal_places=2)
     interes = models.DecimalField(max_digits=12, decimal_places=2)

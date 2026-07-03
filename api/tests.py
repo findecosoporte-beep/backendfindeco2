@@ -359,6 +359,46 @@ class RolePermissionIntegrationTestCase(APITestCase):
         self.assertEqual(pdf_response.status_code, status.HTTP_200_OK)
         self.assertTrue(pdf_response.content.startswith(b'%PDF'))
 
+    def test_cobrado_en_se_guarda_al_crear_pago(self):
+        """Al registrar un cobro se persiste cobrado_en (fecha y hora del evento)."""
+        self._auth_with_role(role='supervisor', email='cobrado.en@test.com')
+        cliente = Cliente.objects.create(nombre='Cliente Cobrado', dni='0801-2000-00031')
+        cartera = Cartera.objects.create(nombre='Cartera Cobrado', dia_cobro='martes')
+        usuario_operativo = Usuario.objects.get(correo='cobrado.en@test.com')
+        payload_prestamo = {
+            'numero_prestamo': 'PRE-COB-001',
+            'id_cliente': cliente.id_cliente,
+            'id_usuario': usuario_operativo.id_usuario,
+            'id_cartera': cartera.id_cartera,
+            'monto': '2000.00',
+            'plazo': 2,
+            'tasa_interes': '10.00',
+            'estado': 'activo',
+            'forma_pago': 'mensual',
+            'forma_desembolso': 'efectivo',
+            'comision': '0.00',
+            'fecha_entrega': date.today().isoformat(),
+        }
+        self.client.post('/api/v1/prestamos/', data=payload_prestamo, format='json')
+        prestamo = Prestamo.objects.get(numero_prestamo='PRE-COB-001')
+        cuota_1 = PrestamoCuota.objects.get(id_prestamo=prestamo, numero_cuota=1)
+        payload_pago = {
+            'id_prestamo': prestamo.id_prestamo,
+            'fecha_pago': date.today().isoformat(),
+            'documento': 'Cuota 1',
+            'capital': str(cuota_1.capital_programado),
+            'interes': str(cuota_1.interes_programado),
+            'mora': '0.00',
+            'saldo': '0.00',
+            'monto_recibido': str(cuota_1.total_programado),
+        }
+        response = self.client.post('/api/v1/pagos/', data=payload_pago, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertIn('cobrado_en', response.data)
+        self.assertIsNotNone(response.data['cobrado_en'])
+        pago = Pago.objects.get(pk=response.data['id_pago'])
+        self.assertIsNotNone(pago.cobrado_en)
+
     def test_estado_cuenta_pdf_prestamo_retorna_pdf(self):
         self._auth_with_role(role='supervisor', email='pdf.estado@test.com')
         cliente = Cliente.objects.create(
@@ -638,6 +678,9 @@ class RolePermissionIntegrationTestCase(APITestCase):
         self.assertEqual(response.data['resumen']['registros'], 1)
         self.assertEqual(response.data['filas'][0]['numero_prestamo'], 'PRE-HIST-001')
         self.assertEqual(response.data['filas'][0]['nombre_cliente'], 'Cliente Hist')
+        self.assertIn('generado_en', response.data)
+        self.assertIn('hora_pago', response.data['filas'][0])
+        self.assertIn('cobrado_en', response.data['filas'][0])
 
         vacio = self.client.get('/api/v1/pagos/historial-cobros/?modo=dia&fecha=2020-01-01')
         self.assertEqual(vacio.status_code, status.HTTP_200_OK)

@@ -6,6 +6,7 @@ from decimal import Decimal
 from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.db.models import Max
+from django.utils import timezone
 from rest_framework import serializers
 
 from .cobrador_scope import validar_cobro_por_cartera
@@ -714,6 +715,7 @@ class PagoSerializer(serializers.ModelSerializer):
         monto_recibido_cliente = (
             round_money(Decimal(monto_recibido)) if monto_recibido is not None else None
         )
+        cobrado_en = validated_data.pop('cobrado_en', None) or timezone.now()
         prestamo = validated_data.get('id_prestamo')
         documento = validated_data.get('documento')
         cuota_numero = extract_cuota_numero_from_documento(documento)
@@ -794,6 +796,7 @@ class PagoSerializer(serializers.ModelSerializer):
                     create_kwargs = {
                         'id_prestamo': prestamo,
                         'fecha_pago': fecha_pago,
+                        'cobrado_en': cobrado_en,
                         'documento': linea['documento'],
                         'capital': linea['capital'],
                         'interes': linea['interes'],
@@ -829,6 +832,8 @@ class PagoSerializer(serializers.ModelSerializer):
         if monto_recibido_cliente is not None:
             validated_data['monto_recibido_cliente'] = monto_recibido_cliente
 
+        validated_data['cobrado_en'] = cobrado_en
+
         pago = super().create(validated_data)
         self.distribucion_resumen = None
         self._sync_prestamo_state(pago.id_prestamo, pago)
@@ -837,6 +842,7 @@ class PagoSerializer(serializers.ModelSerializer):
     @transaction.atomic
     def update(self, instance, validated_data):
         validated_data.pop('monto_recibido', None)
+        validated_data.pop('cobrado_en', None)
         prestamo = validated_data.get('id_prestamo', instance.id_prestamo)
         documento = validated_data.get('documento', instance.documento)
         cuota_numero = extract_cuota_numero_from_documento(documento)

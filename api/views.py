@@ -40,6 +40,13 @@ from .historial_pagos_export import (
     nombre_archivo_historial,
 )
 from .core.cuotas import extract_cuota_numero_from_documento
+from .core.fechas_display import (
+    ahora_local_iso,
+    cobrado_en_efectivo,
+    formato_fecha_hn,
+    formato_fecha_hora_hn,
+    formato_hora_hn,
+)
 from .core.findeco_brand import dibujar_logo_ticket
 from .core.money import round_money
 from .core.prestamo_calc import (
@@ -183,7 +190,10 @@ def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
     y -= 5 * mm
     pdf.drawString(x0 + 1 * mm, y, f'RUC/DNI: {cliente.dni}')
     y -= 5 * mm
-    pdf.drawString(x0 + 1 * mm, y, f'Fecha: {pago.fecha_pago.isoformat()}')
+    momento_cobro = cobrado_en_efectivo(pago)
+    pdf.drawString(x0 + 1 * mm, y, f'Fecha cobro: {formato_fecha_hn(pago.fecha_pago)}')
+    y -= 5 * mm
+    pdf.drawString(x0 + 1 * mm, y, f'Hora registro: {formato_hora_hn(momento_cobro)}')
     y -= 3 * mm
     line()
 
@@ -284,7 +294,8 @@ def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
 
     qr_payload = (
         f"PAGO:{pago.id_pago}|PRESTAMO:{pago.id_prestamo.numero_prestamo}|"
-        f"CLIENTE:{cliente.dni}|FECHA:{pago.fecha_pago.isoformat()}|TOTAL:{total_venta}"
+        f"CLIENTE:{cliente.dni}|FECHA:{pago.fecha_pago.isoformat()}|"
+        f"HORA:{formato_hora_hn(momento_cobro)}|TOTAL:{total_venta}"
     )
     qr_code = qr.QrCodeWidget(qr_payload)
     bounds = qr_code.getBounds()
@@ -1097,6 +1108,7 @@ class PrestamoViewSet(viewsets.ModelViewSet):
         prestamos_qs = qs.order_by('numero_prestamo')
         ids = list(prestamos_qs.values_list('id_prestamo', flat=True))
         fecha_reporte = timezone.localdate().isoformat()
+        generado_en = ahora_local_iso()
 
         if not ids:
             resumen_vacio = {
@@ -1110,6 +1122,7 @@ class PrestamoViewSet(viewsets.ModelViewSet):
             return Response(
                 {
                     'fecha_reporte': fecha_reporte,
+                    'generado_en': generado_en,
                     'count': 0,
                     'page': 1,
                     'next': None,
@@ -1179,6 +1192,7 @@ class PrestamoViewSet(viewsets.ModelViewSet):
             return Response(
                 {
                     'fecha_reporte': fecha_reporte,
+                    'generado_en': generado_en,
                     'filas': _build_filas(list(prestamos_qs)),
                     'resumen': resumen,
                 }
@@ -1192,6 +1206,7 @@ class PrestamoViewSet(viewsets.ModelViewSet):
 
         payload = {
             'fecha_reporte': fecha_reporte,
+            'generado_en': generado_en,
             'count': paginator.count,
             'page': page_obj.number,
             'next': None,
@@ -1351,6 +1366,8 @@ def _datos_historial_pagos_cobros(request) -> dict:
             {
                 'id_pago': pg.id_pago,
                 'fecha_pago': pg.fecha_pago.isoformat(),
+                'hora_pago': formato_hora_hn(cobrado_en_efectivo(pg)),
+                'cobrado_en': pg.cobrado_en.isoformat() if pg.cobrado_en else None,
                 'documento': pg.documento,
                 'capital': str(round_money(capital)),
                 'interes': str(round_money(interes)),
@@ -1369,6 +1386,7 @@ def _datos_historial_pagos_cobros(request) -> dict:
         'modo': (modo or 'dia').strip().lower(),
         'fecha_inicio': inicio.isoformat(),
         'fecha_fin': fin.isoformat(),
+        'generado_en': ahora_local_iso(),
         'cartera_etiqueta': cartera_etiqueta,
         'filas': filas,
         'resumen': {

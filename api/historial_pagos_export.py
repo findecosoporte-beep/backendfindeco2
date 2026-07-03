@@ -13,6 +13,10 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
+from django.utils.dateparse import parse_datetime
+
+from .core.fechas_display import formato_fecha_hora_hn
+
 from .core.findeco_brand import platypus_logo_findeco
 
 MESES_ES = (
@@ -32,6 +36,7 @@ MESES_ES = (
 
 COLUMNAS_EXCEL = (
     ('fecha_pago', 'Fecha'),
+    ('hora_pago', 'Hora'),
     ('nombre_cliente', 'Cliente'),
     ('dni_cliente', 'DNI'),
     ('numero_prestamo', 'Préstamo'),
@@ -69,6 +74,15 @@ def nombre_archivo_historial(datos: dict, extension: str) -> str:
     return f'historial_pagos_{cartera}_{periodo}.{extension}'
 
 
+def _formato_generado(iso: str | None) -> str:
+    if not iso:
+        return '—'
+    dt = parse_datetime(iso)
+    if dt is None:
+        return iso
+    return formato_fecha_hora_hn(dt)
+
+
 def exportar_historial_pagos_xlsx(datos: dict) -> bytes:
     wb = Workbook()
     ws = wb.active
@@ -80,6 +94,7 @@ def exportar_historial_pagos_xlsx(datos: dict) -> bytes:
     ws.append(['FINDECO — Historial de pagos'])
     ws.append([f"Cartera: {datos.get('cartera_etiqueta', 'Todas')}"])
     ws.append([f"Periodo: {_periodo_legible(datos)}"])
+    ws.append([f"Generado: {_formato_generado(datos.get('generado_en'))}"])
     ws.append([])
 
     headers = [label for _, label in COLUMNAS_EXCEL]
@@ -167,17 +182,19 @@ def exportar_historial_pagos_pdf(datos: dict) -> bytes:
             Paragraph('FINDECO — Historial de pagos', title_style),
             Paragraph(f"Cartera: {datos.get('cartera_etiqueta', 'Todas')}", meta_style),
             Paragraph(f"Periodo: {_periodo_legible(datos)}", meta_style),
+            Paragraph(f"Generado: {_formato_generado(datos.get('generado_en'))}", meta_style),
             Spacer(1, 8),
         ]
     )
 
     table_data = [
-        ['Fecha', 'Cliente', 'DNI', 'Préstamo', 'Cartera', 'Doc.', 'Capital', 'Interés', 'Mora', 'Total'],
+        ['Fecha', 'Hora', 'Cliente', 'DNI', 'Préstamo', 'Cartera', 'Doc.', 'Capital', 'Interés', 'Mora', 'Total'],
     ]
     for fila in datos.get('filas', []):
         table_data.append(
             [
                 fila.get('fecha_pago', ''),
+                fila.get('hora_pago', ''),
                 fila.get('nombre_cliente', ''),
                 fila.get('dni_cliente', ''),
                 fila.get('numero_prestamo', ''),
@@ -198,6 +215,7 @@ def exportar_historial_pagos_pdf(datos: dict) -> bytes:
             '',
             '',
             '',
+            '',
             f"{resumen.get('registros', 0)} reg.",
             _money_pdf(resumen.get('total_capital', '0')),
             _money_pdf(resumen.get('total_interes', '0')),
@@ -206,7 +224,7 @@ def exportar_historial_pagos_pdf(datos: dict) -> bytes:
         ]
     )
 
-    col_widths = [22 * mm, 38 * mm, 24 * mm, 26 * mm, 28 * mm, 22 * mm, 22 * mm, 22 * mm, 18 * mm, 24 * mm]
+    col_widths = [20 * mm, 16 * mm, 34 * mm, 22 * mm, 24 * mm, 26 * mm, 20 * mm, 20 * mm, 20 * mm, 16 * mm, 22 * mm]
     table = Table(table_data, colWidths=col_widths, repeatRows=1)
     table.setStyle(
         TableStyle(
