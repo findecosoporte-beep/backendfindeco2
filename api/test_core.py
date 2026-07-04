@@ -24,6 +24,8 @@ from api.core.prestamo_calc import (
     plan_totales_desde_condiciones,
     tasa_periodica_para_calculo,
     tasa_semanal_negocio,
+    tasa_mensual_negocio,
+    interes_total_pct_mensual,
 )
 from api.core.reporte_saldos import saldo_pendiente_desde_plan, total_compromiso_desde_plan
 from api.core.distribucion_pago import (
@@ -76,12 +78,12 @@ class CorePrestamoCalcTestCase(SimpleTestCase):
         self.assertEqual(periods_from_months(12, 'mensual'), 12)
 
     def test_tasa_semanal_negocio(self):
-        self.assertEqual(tasa_semanal_negocio(6), Decimal('2.5'))
-        self.assertEqual(tasa_semanal_negocio(8), Decimal('2.5'))
-        self.assertEqual(tasa_semanal_negocio(10), Decimal('2.5'))
-        self.assertEqual(tasa_semanal_negocio(12), Decimal('2.5'))
-        self.assertEqual(tasa_semanal_negocio(16), Decimal('2.5'))
-        self.assertEqual(tasa_semanal_negocio(4), Decimal('10'))
+        for semanas in (2, 4, 6, 8, 10, 12, 16):
+            self.assertEqual(tasa_semanal_negocio(semanas), Decimal('2.5'))
+
+    def test_tasa_mensual_negocio(self):
+        for meses in (1, 3, 6, 12, 24):
+            self.assertEqual(tasa_mensual_negocio(meses), Decimal('10'))
 
     def test_interes_total_pct_semanal_12_semanas_es_30_por_ciento(self):
         self.assertEqual(interes_total_pct_semanal(12), Decimal('30.0'))
@@ -89,6 +91,19 @@ class CorePrestamoCalcTestCase(SimpleTestCase):
         self.assertEqual(interes_total_pct_semanal(8), Decimal('20'))
         self.assertEqual(interes_total_pct_semanal(10), Decimal('25'))
         self.assertEqual(interes_total_pct_semanal(16), Decimal('40'))
+        self.assertEqual(interes_total_pct_semanal(4), Decimal('10'))
+        self.assertEqual(interes_total_pct_semanal(2), Decimal('5'))
+
+    def test_interes_total_pct_mensual(self):
+        self.assertEqual(interes_total_pct_mensual(6), Decimal('60'))
+        self.assertEqual(interes_total_pct_mensual(12), Decimal('120'))
+        self.assertEqual(interes_total_pct_mensual(3), Decimal('30'))
+
+    def test_tasa_periodica_mensual(self):
+        self.assertEqual(
+            tasa_periodica_para_calculo(Decimal('99.00'), 'mensual', 12),
+            Decimal('10'),
+        )
 
     def test_tasa_periodica_semanal_6_semanas(self):
         self.assertEqual(

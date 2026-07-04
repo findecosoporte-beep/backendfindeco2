@@ -15,9 +15,11 @@ from .core.distribucion_pago import (
     CUOTA_PAGADA_TOLERANCIA,
     abonado_por_cuota_desde_pagos,
     cuota_esta_pagada,
+    cuotas_cubiertas_por_pago_acumulado,
     distribuir_cobro_con_excedente_a_capital,
     pendiente_cuota,
     saldo_pendiente_tras_abono,
+    total_abonado_prestamo,
 )
 from .core.fechas import calculate_fecha_cuota, calculate_fecha_vencimiento
 from .core.money import round_money
@@ -25,6 +27,7 @@ from .core.prestamo_calc import (
     periodos_desde_plazo,
     tasa_periodica_para_calculo,
     tasa_semanal_negocio,
+    tasa_mensual_negocio,
 )
 from .models import (
     Cartera,
@@ -502,8 +505,10 @@ class PrestamoSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError('El plazo debe ser mayor a cero.')
         if comision is not None and comision < 0:
             raise serializers.ValidationError('La comision no puede ser negativa.')
-        if instance is None and forma_pago == 'semanal' and plazo is not None:
+        if forma_pago == 'semanal' and plazo is not None:
             attrs['tasa_interes'] = tasa_semanal_negocio(int(plazo))
+        elif forma_pago == 'mensual' and plazo is not None:
+            attrs['tasa_interes'] = tasa_mensual_negocio(int(plazo))
         if fecha_entrega is not None and plazo is not None and forma_pago is not None:
             cartera = attrs.get('id_cartera', getattr(instance, 'id_cartera', None))
             cliente = _resolver_cliente_en_attrs(attrs, instance)
@@ -648,6 +653,7 @@ class PagoSerializer(serializers.ModelSerializer):
         cuota_numero: int,
         plan_rows: list[PrestamoCuota],
         abonado_previo: dict[int, Decimal],
+        abonado_total: Decimal,
     ) -> None:
         fila = next((row for row in plan_rows if row.numero_cuota == cuota_numero), None)
         if fila is None:
@@ -656,6 +662,14 @@ class PagoSerializer(serializers.ModelSerializer):
         if cuota_esta_pagada(abonado, Decimal(fila.total_programado)):
             raise serializers.ValidationError(
                 f'La cuota {cuota_numero} ya está pagada en su totalidad.'
+            )
+        # El cliente pudo haber adelantado varias cuotas de una sola vez (el excedente
+        # quedó como abono a capital); si el acumulado ya cubre esta cuota, no se
+        # puede volver a cobrar aunque no tenga un pago propio con este número.
+        cubiertas = cuotas_cubiertas_por_pago_acumulado(plan_rows, abonado_total)
+        if cuota_numero in cubiertas:
+            raise serializers.ValidationError(
+                f'La cuota {cuota_numero} ya está cubierta por abonos anteriores del cliente.'
             )
 
     def validate(self, attrs):
@@ -684,8 +698,12 @@ class PagoSerializer(serializers.ModelSerializer):
             plan_rows = list(
                 PrestamoCuota.objects.filter(id_prestamo=prestamo).order_by('numero_cuota')
             )
-            abonado_previo = abonado_por_cuota_desde_pagos(self._pagos_existentes(prestamo))
-            self._validar_cuota_inicio_abierta(prestamo, cuota_numero, plan_rows, abonado_previo)
+            pagos_existentes = list(self._pagos_existentes(prestamo))
+            abonado_previo = abonado_por_cuota_desde_pagos(pagos_existentes)
+            abonado_total = total_abonado_prestamo(pagos_existentes)
+            self._validar_cuota_inicio_abierta(
+                prestamo, cuota_numero, plan_rows, abonado_previo, abonado_total,
+            )
         return attrs
 
     @staticmethod
@@ -775,6 +793,8 @@ class PagoSerializer(serializers.ModelSerializer):
                     }
                     if linea.get('abono_capital'):
                         item['abono_capital'] = True
+                        if linea.get('liquida_prestamo'):
+                            item['liquida_prestamo'] = True
                     else:
                         item['cuota'] = linea['numero_cuota']
                     if linea.get('parcial'):

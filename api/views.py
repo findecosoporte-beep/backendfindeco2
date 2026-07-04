@@ -52,15 +52,18 @@ from .core.money import round_money
 from .core.prestamo_calc import (
     annual_rate_from_nominal,
     frecuencia_anual,
+    interes_total_pct_mensual,
     interes_total_pct_semanal,
     periodos_desde_plazo,
     tasa_periodica_para_calculo,
+    tasa_mensual_negocio,
     tasa_semanal_negocio,
     plan_totales_desde_condiciones,
 )
 from .core.anulacion_pago import anular_grupo_cobro, filtrar_pagos_vigentes
 from .core.distribucion_pago import (
     abonado_por_cuota_desde_pagos,
+    cuotas_cubiertas_por_pago_acumulado,
     cuotas_pagadas_completas,
     pendiente_cuota,
 )
@@ -87,8 +90,9 @@ from .models import (
 )
 from .permissions import RoleBasedAccessPermission
 from .pagination import ClienteListPagination, ReporteIntegracionPagination
-from .role_policy import WRITE_ADMIN, WRITE_ANULAR_PAGOS, WRITE_COBROS, WRITE_CONTRATOS, WRITE_DOCUMENTOS
+from .role_policy import WRITE_ADMIN, WRITE_ANULAR_PAGOS, WRITE_COBROS, WRITE_CONTRATOS, WRITE_DOCUMENTOS 
 from .serializers import (
+    
     CarteraSerializer,
     ClienteSerializer,
     ClienteDocumentoSerializer,
@@ -191,6 +195,9 @@ def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
     detalle_distribucion = pago.detalle_distribucion or []
     es_abono_parcial = any(
         isinstance(item, dict) and item.get('parcial') for item in detalle_distribucion
+    )
+    liquida_prestamo = any(
+        isinstance(item, dict) and item.get('liquida_prestamo') for item in detalle_distribucion
     )
 
     x0 = 0
@@ -338,6 +345,10 @@ def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
         else:
             pdf.drawString(producto_x, y, 'Abono parcial a la cuota')
         y -= 4.2 * mm
+    if liquida_prestamo:
+        pdf.setFillColor(colors.HexColor('#0A6E31'))
+        center_text('*** PRESTAMO LIQUIDADO ***', 9 if is_80mm else 8, True, 4.6)
+        pdf.setFillColor(colors.black)
     line()
 
     # Datos extra y QR.
@@ -601,6 +612,9 @@ class SimulacionPrestamoView(APIView):
         if forma_pago == 'semanal':
             tasa_aplicada_pct = tasa_semanal_negocio(plazo)
             tasa_anual_pct = interes_total_pct_semanal(plazo)
+        elif forma_pago == 'mensual':
+            tasa_aplicada_pct = tasa_mensual_negocio(plazo)
+            tasa_anual_pct = interes_total_pct_mensual(plazo)
         else:
             tasa_aplicada_pct = tasa_nominal_pct
             tasa_anual_pct = annual_rate_from_nominal(tasa_nominal_pct)
@@ -1022,11 +1036,18 @@ def _fila_reporte_integracion(
     if not asesor_txt and p.id_usuario_id:
         asesor_txt = (getattr(p.id_usuario, 'nombre', None) or '').strip()
 
+    # Cuotas ya cubiertas por el acumulado total pagado (aunque el excedente haya
+    # quedado registrado como abono a capital y no como "Cuota N" de cada una).
+    cubiertas_por_acumulado = cuotas_cubiertas_por_pago_acumulado(
+        plan_rows, abonado_por_prestamo.get(p.id_prestamo, Decimal('0.00'))
+    )
+
     siguiente = next(
         (
             row
             for row in plan_rows
-            if pendiente_cuota(row, abonado_cuota.get(row.numero_cuota, Decimal('0.00'))) > 0
+            if row.numero_cuota not in cubiertas_por_acumulado
+            and pendiente_cuota(row, abonado_cuota.get(row.numero_cuota, Decimal('0.00'))) > 0
         ),
         None,
     )
@@ -1035,7 +1056,8 @@ def _fila_reporte_integracion(
     cuotas_atrasadas_nums = [
         row.numero_cuota
         for row in plan_rows
-        if pendiente_cuota(row, abonado_cuota.get(row.numero_cuota, Decimal('0.00'))) > 0
+        if row.numero_cuota not in cubiertas_por_acumulado
+        and pendiente_cuota(row, abonado_cuota.get(row.numero_cuota, Decimal('0.00'))) > 0
         and row.fecha_programada < hoy
     ]
 

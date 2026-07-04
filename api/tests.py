@@ -24,6 +24,7 @@ from .models import (
     UsuarioCartera,
     Zona,
 )
+from .estado_cuenta_export import recolectar_datos_estado_cuenta
 from .serializers import PrestamoSerializer
 
 
@@ -565,6 +566,138 @@ class RolePermissionIntegrationTestCase(APITestCase):
         self.assertEqual(fila['cuota_siguiente_numero'], 2)
         self.assertEqual(Decimal(fila['cuota_siguiente_monto']), cuota_2.total_programado)
         self.assertEqual(Decimal(pagos.last().saldo), Decimal('9500.00'))
+
+    def test_pago_unico_liquida_prestamo_completo_marca_todas_las_cuotas(self):
+        """Un solo cobro que cubre todas las cuotas restantes liquida el préstamo."""
+        self._auth_with_role(role='supervisor', email='liquida.prestamo@test.com')
+        cliente = Cliente.objects.create(nombre='Cliente Liquida', dni='0801-2000-00028')
+        cartera = Cartera.objects.create(nombre='Cartera Liquida', dia_cobro='lunes')
+        usuario_operativo = Usuario.objects.get(correo='liquida.prestamo@test.com')
+        payload_prestamo = {
+            'numero_prestamo': 'PRE-LIQ-001',
+            'id_cliente': cliente.id_cliente,
+            'id_usuario': usuario_operativo.id_usuario,
+            'id_cartera': cartera.id_cartera,
+            'monto': '3000.00',
+            'plazo': 3,
+            'tasa_interes': '10.00',
+            'estado': 'activo',
+            'forma_pago': 'semanal',
+            'forma_desembolso': 'efectivo',
+            'comision': '0.00',
+            'fecha_entrega': date(2026, 6, 21).isoformat(),
+        }
+        response_prestamo = self.client.post('/api/v1/prestamos/', data=payload_prestamo, format='json')
+        self.assertEqual(response_prestamo.status_code, status.HTTP_201_CREATED)
+        prestamo = Prestamo.objects.get(numero_prestamo='PRE-LIQ-001')
+        cuota_1 = PrestamoCuota.objects.get(id_prestamo=prestamo, numero_cuota=1)
+        self.assertEqual(cuota_1.total_programado, Decimal('1300.00'))
+
+        payload_pago = {
+            'id_prestamo': prestamo.id_prestamo,
+            'fecha_pago': date.today().isoformat(),
+            'documento': 'Cuota 1',
+            'capital': str(cuota_1.capital_programado),
+            'interes': str(cuota_1.interes_programado),
+            'mora': '0.00',
+            'saldo': '0.00',
+            # Cubre las 3 cuotas del plan (3 x 1300.00 = 3900.00) en un solo cobro.
+            'monto_recibido': '3900.00',
+        }
+        response = self.client.post('/api/v1/pagos/', data=payload_pago, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+
+        pago = Pago.objects.get(id_prestamo=prestamo)
+        self.assertEqual(Decimal(pago.saldo), Decimal('0.00'))
+        detalle = pago.detalle_distribucion or []
+        self.assertEqual(len(detalle), 2)
+        self.assertTrue(detalle[1].get('abono_capital'))
+        self.assertTrue(detalle[1].get('liquida_prestamo'))
+
+        prestamo.refresh_from_db()
+        self.assertEqual(prestamo.estado, 'pagado')
+
+        pdf_pago = self.client.get(f'/api/v1/pagos/{pago.id_pago}/factura-pdf/')
+        self.assertEqual(pdf_pago.status_code, status.HTTP_200_OK)
+        self.assertTrue(pdf_pago.content.startswith(b'%PDF'))
+
+        datos_estado = recolectar_datos_estado_cuenta(prestamo)
+        self.assertEqual(len(datos_estado['cuotas']), 3)
+        for fila in datos_estado['cuotas']:
+            self.assertEqual(fila['estado'], 'Pagada')
+        self.assertEqual(datos_estado['resumen']['cuotas_pagadas'], 3)
+        self.assertEqual(datos_estado['resumen']['cuotas_pendientes'], 0)
+
+    def test_pago_adelanta_varias_cuotas_sin_liquidar_bloquea_doble_cobro(self):
+        """Adelantar cuotas (sin liquidar el préstamo) las cubre y evita cobrarlas de nuevo."""
+        self._auth_with_role(role='supervisor', email='adelanta.cuotas@test.com')
+        cliente = Cliente.objects.create(nombre='Cliente Adelanta', dni='0801-2000-00029')
+        cartera = Cartera.objects.create(nombre='Cartera Adelanta', dia_cobro='lunes')
+        usuario_operativo = Usuario.objects.get(correo='adelanta.cuotas@test.com')
+        payload_prestamo = {
+            'numero_prestamo': 'PRE-ADEL-001',
+            'id_cliente': cliente.id_cliente,
+            'id_usuario': usuario_operativo.id_usuario,
+            'id_cartera': cartera.id_cartera,
+            'monto': '10000.00',
+            'plazo': 6,
+            'tasa_interes': '10.00',
+            'estado': 'activo',
+            'forma_pago': 'semanal',
+            'forma_desembolso': 'efectivo',
+            'comision': '0.00',
+            'fecha_entrega': date(2026, 6, 21).isoformat(),
+        }
+        response_prestamo = self.client.post('/api/v1/prestamos/', data=payload_prestamo, format='json')
+        self.assertEqual(response_prestamo.status_code, status.HTTP_201_CREATED)
+        prestamo = Prestamo.objects.get(numero_prestamo='PRE-ADEL-001')
+        cuota_1 = PrestamoCuota.objects.get(id_prestamo=prestamo, numero_cuota=1)
+        self.assertEqual(cuota_1.total_programado, Decimal('1916.67'))
+
+        # Paga el equivalente a 4 cuotas de una sola vez (4 x 1916.67 = 7666.68).
+        payload_pago = {
+            'id_prestamo': prestamo.id_prestamo,
+            'fecha_pago': date.today().isoformat(),
+            'documento': 'Cuota 1',
+            'capital': str(cuota_1.capital_programado),
+            'interes': str(cuota_1.interes_programado),
+            'mora': '0.00',
+            'saldo': '0.00',
+            'monto_recibido': '7666.68',
+        }
+        response = self.client.post('/api/v1/pagos/', data=payload_pago, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+
+        prestamo.refresh_from_db()
+        self.assertNotEqual(prestamo.estado, 'pagado')
+
+        datos_estado = recolectar_datos_estado_cuenta(prestamo)
+        estados_por_cuota = {f['numero_cuota']: f['estado'] for f in datos_estado['cuotas']}
+        self.assertEqual(estados_por_cuota[1], 'Pagada')
+        self.assertEqual(estados_por_cuota[2], 'Pagada')
+        self.assertEqual(estados_por_cuota[3], 'Pagada')
+        self.assertEqual(estados_por_cuota[4], 'Pagada')
+        self.assertEqual(estados_por_cuota[5], 'Pendiente')
+        self.assertEqual(estados_por_cuota[6], 'Pendiente')
+
+        reporte = self.client.get(
+            f'/api/v1/prestamos/reporte-integracion/?id_prestamo={prestamo.id_prestamo}&all=1'
+        )
+        fila = reporte.data['filas'][0]
+        self.assertEqual(fila['cuota_siguiente_numero'], 5)
+
+        # Intentar cobrar la cuota 2 (ya cubierta por el adelanto) debe rechazarse.
+        payload_doble_cobro = {
+            'id_prestamo': prestamo.id_prestamo,
+            'fecha_pago': date.today().isoformat(),
+            'documento': 'Cuota 2',
+            'capital': '1666.67',
+            'interes': '250.00',
+            'mora': '0.00',
+            'saldo': '0.00',
+        }
+        respuesta_doble = self.client.post('/api/v1/pagos/', data=payload_doble_cobro, format='json')
+        self.assertEqual(respuesta_doble.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_pago_parcial_queda_saldo_en_misma_cuota_sin_interes_adicional(self):
         """Si el cliente paga menos que la cuota, se registra el abono y la cuota sigue abierta."""
@@ -1132,7 +1265,7 @@ class RolePermissionIntegrationTestCase(APITestCase):
             self.assertEqual(cuota.fecha_programada.weekday(), 0)
 
     def test_crear_prestamo_semanal_aplica_tasa_negocio_por_semanas(self):
-        """Semanal: 6 semanas → 2.5%; otras → 10% semanal; interés simple fijo."""
+        """Semanal: siempre 2.5% por semana; interés total = semanas × 2.5%."""
         self._auth_with_role(role='supervisor', email='plan.semanal@test.com')
         cliente = Cliente.objects.create(nombre='Cliente Plan Semanal', dni='0801-2000-00014')
         cartera = Cartera.objects.create(nombre='Cartera Plan Semanal', dia_cobro='miercoles')

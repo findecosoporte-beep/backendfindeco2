@@ -13,13 +13,22 @@ __all__ = [
     'CUOTA_PAGADA_TOLERANCIA',
     'abonado_por_cuota_desde_pagos',
     'cuota_esta_pagada',
+    'cuotas_cubiertas_por_pago_acumulado',
     'cuotas_pagadas_completas',
     'distribuir_cobro_con_excedente_a_capital',
     'distribuir_monto_en_cuotas',
     'pendiente_cuota',
     'saldo_pendiente_con_abonos',
     'saldo_pendiente_tras_abono',
+    'total_abonado_prestamo',
 ]
+
+
+def total_abonado_prestamo(pagos) -> Decimal:
+    """Suma capital+interés+mora de TODOS los pagos del préstamo (incluye abono a capital)."""
+    return round_money(
+        sum((Decimal(pg.capital) + Decimal(pg.interes) + Decimal(pg.mora) for pg in pagos), Decimal('0.00'))
+    )
 
 
 def abonado_por_cuota_desde_pagos(pagos) -> dict[int, Decimal]:
@@ -54,6 +63,28 @@ def cuotas_pagadas_completas(plan_rows: list, abonado_por_cuota: dict[int, Decim
         ):
             pagadas.add(row.numero_cuota)
     return pagadas
+
+
+def cuotas_cubiertas_por_pago_acumulado(plan_rows: list, abonado_total: Decimal) -> set[int]:
+    """
+    Cuotas cubiertas al consumir, en orden, TODO lo pagado en el préstamo (incluye
+    abonos a capital, sin importar con qué documento se registró cada pago).
+
+    Sirve para saber qué cuotas ya no se pueden volver a cobrar cuando el cliente
+    adelantó varias cuotas de una sola vez (el excedente entra como abono a capital,
+    pero de todas formas cubre esas cuotas futuras en orden).
+    """
+    if not plan_rows:
+        return set()
+    acumulado_objetivo = Decimal('0.00')
+    cubiertas: set[int] = set()
+    for row in sorted(plan_rows, key=lambda r: r.numero_cuota):
+        acumulado_objetivo += monto_cuota_programada(row)
+        if abonado_total >= acumulado_objetivo - CUOTA_PAGADA_TOLERANCIA:
+            cubiertas.add(row.numero_cuota)
+        else:
+            break
+    return cubiertas
 
 
 def saldo_pendiente_con_abonos(plan_rows: list, abonado_por_cuota: dict[int, Decimal]) -> Decimal:
@@ -157,6 +188,7 @@ def distribuir_cobro_con_excedente_a_capital(
     excedente = restante
     if excedente > 0:
         pagado_en_cobro += excedente
+        saldo_tras_abono = _saldo_tras_monto_pagado(plan_rows, pagado_previo, pagado_en_cobro)
         lineas.append(
             {
                 'numero_cuota': None,
@@ -165,7 +197,9 @@ def distribuir_cobro_con_excedente_a_capital(
                 'capital': excedente,
                 'interes': Decimal('0.00'),
                 'mora': Decimal('0.00'),
-                'saldo': _saldo_tras_monto_pagado(plan_rows, pagado_previo, pagado_en_cobro),
+                'saldo': saldo_tras_abono,
+                # El abono cubrió todo lo comprometido del plan: el préstamo queda liquidado.
+                'liquida_prestamo': saldo_tras_abono <= Decimal('0.00'),
             }
         )
 

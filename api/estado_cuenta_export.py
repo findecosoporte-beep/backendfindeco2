@@ -15,6 +15,7 @@ from reportlab.lib.units import mm
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from .core.cuotas import extract_cuota_numero_from_documento
+from .core.distribucion_pago import cuotas_cubiertas_por_pago_acumulado, total_abonado_prestamo
 from .core.fechas_display import ahora_local_iso, cobrado_en_efectivo, formato_fecha_hn, formato_fecha_hora_hn, formato_hora_hn
 from .core.findeco_brand import platypus_logo_findeco
 from .core.money import round_money
@@ -87,20 +88,42 @@ def recolectar_datos_estado_cuenta(prestamo: Prestamo) -> dict:
     )
     pago_map = pago_por_cuota_con_fallback(cuotas, pagos)
 
+    # Cuotas cubiertas por el acumulado total pagado (aunque el excedente haya
+    # quedado como abono a capital y no como "Cuota N" de cada una): el cliente
+    # pudo adelantar varias cuotas de una sola vez, con o sin liquidar todo el plan.
+    abonado_total = total_abonado_prestamo(pagos)
+    cubiertas_por_acumulado = cuotas_cubiertas_por_pago_acumulado(cuotas, abonado_total)
+    ultimo_pago = pagos[-1] if pagos else None
+
     filas_cuotas = []
     for cuota in cuotas:
         pago = pago_map.get(cuota.numero_cuota)
+        if pago is not None:
+            estado = 'Pagada'
+            fecha_pago_val = pago.fecha_pago.isoformat()
+            hora_val = formato_hora_hn(cobrado_en_efectivo(pago))
+            documento_val = pago.documento or f'Cuota {cuota.numero_cuota}'
+        elif cuota.numero_cuota in cubiertas_por_acumulado and ultimo_pago is not None:
+            estado = 'Pagada'
+            fecha_pago_val = ultimo_pago.fecha_pago.isoformat()
+            hora_val = formato_hora_hn(cobrado_en_efectivo(ultimo_pago))
+            documento_val = 'Cubierta por abono a capital'
+        else:
+            estado = 'Pendiente'
+            fecha_pago_val = ''
+            hora_val = ''
+            documento_val = ''
         filas_cuotas.append(
             {
                 'numero_cuota': cuota.numero_cuota,
                 'fecha_programada': cuota.fecha_programada.isoformat(),
                 'total_programado': str(round_money(monto_cuota_programada(cuota))),
                 'saldo_capital': str(round_money(cuota.saldo_capital_programado)),
-                'estado': 'Pagada' if pago else 'Pendiente',
-                'fecha_pago': pago.fecha_pago.isoformat() if pago else '',
-                'fecha_cancelo': pago.fecha_pago.isoformat() if pago else '',
-                'hora_pago': formato_hora_hn(cobrado_en_efectivo(pago)) if pago else '',
-                'documento': (pago.documento or f'Cuota {cuota.numero_cuota}') if pago else '',
+                'estado': estado,
+                'fecha_pago': fecha_pago_val,
+                'fecha_cancelo': fecha_pago_val,
+                'hora_pago': hora_val,
+                'documento': documento_val,
             }
         )
 
