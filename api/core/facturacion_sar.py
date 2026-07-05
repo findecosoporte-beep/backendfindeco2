@@ -6,7 +6,7 @@ from datetime import date
 
 from django.utils import timezone
 
-from api.models import ConfiguracionFacturacion, Pago
+from api import models
 
 
 class ErrorFacturacionSAR(Exception):
@@ -31,13 +31,16 @@ def formatear_correlativo_rango(correlativo: int) -> str:
     return f'{int(correlativo):08d}'
 
 
-def obtener_configuracion_facturacion() -> ConfiguracionFacturacion:
+def obtener_configuracion_facturacion() -> models.ConfiguracionFacturacion:
     """Singleton de configuracion fiscal (pk=1)."""
-    config, _ = ConfiguracionFacturacion.objects.get_or_create(pk=1)
+    config, _ = models.ConfiguracionFacturacion.objects.get_or_create(pk=1)
     return config
 
 
-def _validar_configuracion_activa(config: ConfiguracionFacturacion, fecha_ref: date | None = None) -> None:
+def _validar_configuracion_activa(
+    config: models.ConfiguracionFacturacion,
+    fecha_ref: date | None = None,
+) -> None:
     if not config.usar_numeracion_sar:
         return
     if not config.razon_social.strip():
@@ -59,7 +62,7 @@ def _validar_configuracion_activa(config: ConfiguracionFacturacion, fecha_ref: d
         )
 
 
-def asignar_numero_factura_sar(pago: Pago) -> str | None:
+def asignar_numero_factura_sar(pago: models.Pago) -> str | None:
     """
     Reserva el siguiente numero SAR para un cobro con factura propia.
 
@@ -71,7 +74,7 @@ def asignar_numero_factura_sar(pago: Pago) -> str | None:
     if getattr(pago, 'id_pago_factura_id', None):
         return None
 
-    config, _ = ConfiguracionFacturacion.objects.select_for_update().get_or_create(pk=1)
+    config, _ = models.ConfiguracionFacturacion.objects.select_for_update().get_or_create(pk=1)
     if not config.usar_numeracion_sar:
         return None
 
@@ -92,7 +95,7 @@ def asignar_numero_factura_sar(pago: Pago) -> str | None:
     return numero
 
 
-def texto_rango_autorizado(config: ConfiguracionFacturacion) -> str:
+def texto_rango_autorizado(config: models.ConfiguracionFacturacion) -> str:
     """Leyenda de rango autorizado para pie de factura."""
     desde = formatear_numero_factura_sar(
         config.establecimiento,

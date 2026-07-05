@@ -1036,16 +1036,32 @@ def _cargar_auxiliar_reporte_integracion(ids: list[int]) -> tuple[
 
     pagos_por_prestamo: dict[int, list[Pago]] = defaultdict(list)
     abonado_por_prestamo: dict[int, Decimal] = defaultdict(lambda: Decimal('0.00'))
+    ultimo_pago_por: dict[int, Pago] = {}
     if ids:
+        # Una sola consulta: incluir detalle_distribucion evita N+1 al calcular abonos por cuota.
         for pg in (
             filtrar_pagos_vigentes(Pago.objects.filter(id_prestamo_id__in=ids))
-            .only('id_prestamo_id', 'documento', 'capital', 'interes', 'mora')
-            .iterator()
+            .only(
+                'id_pago',
+                'id_prestamo_id',
+                'documento',
+                'capital',
+                'interes',
+                'mora',
+                'fecha_pago',
+                'saldo',
+                'detalle_distribucion',
+            )
+            .order_by('id_prestamo_id', '-fecha_pago', '-id_pago')
+            .iterator(chunk_size=500)
         ):
-            pagos_por_prestamo[pg.id_prestamo_id].append(pg)
-            abonado_por_prestamo[pg.id_prestamo_id] += (
+            pid = pg.id_prestamo_id
+            pagos_por_prestamo[pid].append(pg)
+            abonado_por_prestamo[pid] += (
                 Decimal(pg.capital) + Decimal(pg.interes) + Decimal(pg.mora)
             )
+            if pid not in ultimo_pago_por:
+                ultimo_pago_por[pid] = pg
 
     abonado_cuota_por_prestamo: dict[int, dict[int, Decimal]] = {}
     cuotas_pagadas_nums: dict[int, set[int]] = {}
@@ -1054,16 +1070,6 @@ def _cargar_auxiliar_reporte_integracion(ids: list[int]) -> tuple[
         abonado_cuota_por_prestamo[pid] = abonado_cuota
         plan = cuotas_por_prestamo.get(pid, [])
         cuotas_pagadas_nums[pid] = cuotas_pagadas_completas(plan, abonado_cuota) if plan else set()
-
-    ultimo_pago_por: dict[int, Pago] = {}
-    if ids:
-        for pay in (
-            filtrar_pagos_vigentes(Pago.objects.filter(id_prestamo_id__in=ids))
-            .order_by('id_prestamo_id', '-fecha_pago', '-id_pago')
-            .only('id_prestamo_id', 'saldo', 'fecha_pago', 'id_pago')
-        ):
-            if pay.id_prestamo_id not in ultimo_pago_por:
-                ultimo_pago_por[pay.id_prestamo_id] = pay
 
     return (
         primera_cuota,
@@ -1238,6 +1244,29 @@ class PrestamoViewSet(viewsets.ModelViewSet):
         qs = Prestamo.objects.select_related('id_cliente', 'id_usuario', 'id_zona', 'id_cartera').all()
         return filtrar_prestamos_por_cobrador(qs, self.request)
 
+    def perform_destroy(self, instance):
+        num_pagos = Pago.objects.filter(id_prestamo=instance).count()
+        if num_pagos:
+            raise ValidationError(
+                {
+                    'detail': (
+                        f'No se puede eliminar el préstamo: tiene {num_pagos} cobro(s) registrado(s). '
+                        'Anule los cobros antes de eliminar el préstamo.'
+                    ),
+                }
+            )
+        num_servicios = Servicio.objects.filter(id_prestamo=instance).count()
+        if num_servicios:
+            raise ValidationError(
+                {
+                    'detail': (
+                        f'No se puede eliminar el préstamo: tiene {num_servicios} servicio(s) asociado(s). '
+                        'Elimine los servicios antes de borrar el préstamo.'
+                    ),
+                }
+            )
+        instance.delete()
+
     @action(detail=False, methods=['get'], url_path='reporte-integracion')
     def reporte_integracion(self, request):
         """Listado agregado tipo reporte de cartera: cuota planificada y saldo desde último pago."""
@@ -1321,7 +1350,7 @@ class PrestamoViewSet(viewsets.ModelViewSet):
         sum_cuota = Decimal('0')
         sum_actual = Decimal('0')
         sum_plazo = 0
-        for p in prestamos_qs:
+        for p in prestamos_qs.iterator(chunk_size=200):
             clientes_ids.add(p.id_cliente_id)
             plan_rows = cuotas_por_prestamo.get(p.id_prestamo, [])
             paid_nums = cuotas_pagadas_nums.get(p.id_prestamo, set())

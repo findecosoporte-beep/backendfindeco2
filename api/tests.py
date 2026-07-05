@@ -1539,6 +1539,61 @@ class ConfiguracionFacturacionTestCase(APITestCase):
         numero = formatear_numero_factura_sar('1', '2', '1', 42)
         self.assertEqual(numero, '001-002-01-00000042')
 
+    def test_eliminar_prestamo_con_cobros_devuelve_400(self):
+        self._auth_with_role(role='supervisor', email='del.prestamo.cobros@test.com')
+        cliente = Cliente.objects.create(nombre='Cliente Del Cobros', dni='0801-2000-00999')
+        usuario_operativo = Usuario.objects.get(correo='del.prestamo.cobros@test.com')
+        prestamo = Prestamo.objects.create(
+            numero_prestamo='PRE-DEL-COBROS',
+            id_cliente=cliente,
+            id_usuario=usuario_operativo,
+            monto=Decimal('5000.00'),
+            plazo=4,
+            tasa_interes=Decimal('10.00'),
+            estado='activo',
+            forma_pago='semanal',
+            forma_desembolso='efectivo',
+            comision=Decimal('0.00'),
+            fecha_entrega=date.today(),
+            fecha_vencimiento=date.today(),
+        )
+        Pago.objects.create(
+            id_prestamo=prestamo,
+            fecha_pago=date.today(),
+            documento='Cuota 1',
+            capital=Decimal('1000.00'),
+            interes=Decimal('100.00'),
+            mora=Decimal('0.00'),
+            saldo=Decimal('4000.00'),
+        )
+        response = self.client.delete(f'/api/v1/prestamos/{prestamo.id_prestamo}/')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(response.data['success'])
+        self.assertIn('cobro', response.data['error']['message'].lower())
+        self.assertTrue(Prestamo.objects.filter(id_prestamo=prestamo.id_prestamo).exists())
+
+    def test_eliminar_prestamo_sin_cobros_ok(self):
+        self._auth_with_role(role='supervisor', email='del.prestamo.ok@test.com')
+        cliente = Cliente.objects.create(nombre='Cliente Del OK', dni='0801-2000-00998')
+        usuario_operativo = Usuario.objects.get(correo='del.prestamo.ok@test.com')
+        prestamo = Prestamo.objects.create(
+            numero_prestamo='PRE-DEL-OK',
+            id_cliente=cliente,
+            id_usuario=usuario_operativo,
+            monto=Decimal('3000.00'),
+            plazo=4,
+            tasa_interes=Decimal('10.00'),
+            estado='activo',
+            forma_pago='semanal',
+            forma_desembolso='efectivo',
+            comision=Decimal('0.00'),
+            fecha_entrega=date.today(),
+            fecha_vencimiento=date.today(),
+        )
+        response = self.client.delete(f'/api/v1/prestamos/{prestamo.id_prestamo}/')
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(Prestamo.objects.filter(id_prestamo=prestamo.id_prestamo).exists())
+
 
 class OpenApiSettingsTestCase(APITestCase):
     """Swagger solo cuando OPENAPI_ENABLED está activo."""
