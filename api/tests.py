@@ -1675,6 +1675,14 @@ class ReporteSarTrimestralTestCase(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data['rtn'], '08019001112233')
 
+    def test_reporte_sar_trimestral_pdf(self):
+        self._auth_with_role(role='supervisor', email='sar.pdf@test.com')
+        response = self.client.get('/api/v1/reportes/sar/?trimestre=2&anio=2026&formato=pdf')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response['Content-Type'], 'application/pdf')
+        self.assertTrue(response.content.startswith(b'%PDF'))
+        self.assertIn('reporte-sar-T2-2026.pdf', response['Content-Disposition'])
+
 
 class OpenApiSettingsTestCase(APITestCase):
     """Swagger solo cuando OPENAPI_ENABLED está activo."""

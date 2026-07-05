@@ -69,6 +69,7 @@ from .core.distribucion_pago import (
     pendiente_cuota,
 )
 from .core.reporte_sar_regulatorio import generar_reporte_sar_trimestral
+from .reporte_sar_export import exportar_reporte_sar_trimestral_pdf, nombre_archivo_reporte_sar
 from .cobrador_scope import (
     carteras_ids_para_usuario,
     filtrar_pagos_por_cobrador,
@@ -1813,4 +1814,12 @@ class ReporteSarTrimestralView(APIView):
             raise ValidationError({'trimestre': 'Debe estar entre 1 y 4.'})
         if anio < 2000 or anio > 2100:
             raise ValidationError({'anio': 'Anio fuera de rango.'})
-        return Response(generar_reporte_sar_trimestral(anio, trimestre))
+        datos = generar_reporte_sar_trimestral(anio, trimestre)
+        formato = (request.query_params.get('formato') or 'json').strip().lower()
+        if formato == 'pdf':
+            pdf_content = exportar_reporte_sar_trimestral_pdf(datos)
+            response = HttpResponse(pdf_content, content_type='application/pdf')
+            filename = nombre_archivo_reporte_sar(trimestre, anio)
+            response['Content-Disposition'] = f'inline; filename="{filename}"'
+            return response
+        return Response(datos)
