@@ -20,6 +20,14 @@ from .core.findeco_brand import platypus_logo_findeco
 MARGIN_H_MM = 16
 TABLE_WIDTH_MM = (letter[0] / mm) - (2 * MARGIN_H_MM)
 
+# Paleta formal (reporte regulatorio en blanco y negro)
+_COLOR_NEGRO = colors.HexColor('#000000')
+_COLOR_GRIS_OSCURO = colors.HexColor('#333333')
+_COLOR_GRIS_MEDIO = colors.HexColor('#666666')
+_COLOR_GRIS_CLARO = colors.HexColor('#f0f0f0')
+_COLOR_GRIS_FILA = colors.HexColor('#fafafa')
+_COLOR_BORDE = colors.HexColor('#000000')
+
 _TRIMESTRE_NOMBRE = {
     1: 'Primer trimestre (enero – marzo)',
     2: 'Segundo trimestre (abril – junio)',
@@ -99,60 +107,75 @@ def exportar_reporte_sar_trimestral_pdf(datos: dict) -> bytes:
     sar_title = ParagraphStyle(
         'SarTitle',
         parent=styles['Heading1'],
-        fontSize=13,
+        fontSize=14,
         alignment=1,
-        spaceAfter=4,
-        textColor=colors.HexColor('#1e3a5f'),
+        spaceAfter=6,
+        spaceBefore=4,
+        textColor=_COLOR_NEGRO,
         fontName='Helvetica-Bold',
+        leading=17,
     )
     sar_subtitle = ParagraphStyle(
         'SarSubtitle',
         parent=styles['Normal'],
         fontSize=10,
         alignment=1,
-        spaceAfter=2,
-        textColor=colors.HexColor('#334155'),
+        spaceAfter=3,
+        textColor=_COLOR_GRIS_OSCURO,
+        fontName='Helvetica-Bold',
+        leading=13,
+    )
+    sar_subtitle_normal = ParagraphStyle(
+        'SarSubtitleNormal',
+        parent=sar_subtitle,
+        fontName='Helvetica',
+        fontSize=9,
+        textColor=_COLOR_GRIS_MEDIO,
     )
     section = ParagraphStyle(
         'SarSection',
         parent=styles['Heading2'],
-        fontSize=10,
-        spaceBefore=10,
-        spaceAfter=5,
-        textColor=colors.HexColor('#1e3a5f'),
+        fontSize=11,
+        spaceBefore=12,
+        spaceAfter=6,
+        textColor=_COLOR_NEGRO,
         fontName='Helvetica-Bold',
+        leading=14,
+    )
+    subsection = ParagraphStyle(
+        'SarSubsection',
+        parent=section,
+        fontSize=10,
+        spaceBefore=8,
+        spaceAfter=4,
     )
     legal = ParagraphStyle(
         'SarLegal',
         parent=styles['Normal'],
-        fontSize=8,
-        textColor=colors.HexColor('#475569'),
-        leading=11,
+        fontSize=9,
+        textColor=_COLOR_GRIS_OSCURO,
+        fontName='Helvetica',
+        leading=12,
         spaceAfter=4,
     )
 
     story: list = []
-    logo = platypus_logo_findeco(ancho_mm=50, alto_mm=18)
+    logo = platypus_logo_findeco(ancho_mm=45, alto_mm=16)
     if logo is not None:
-        story.extend([logo, Spacer(1, 6)])
+        story.extend([logo, Spacer(1, 8)])
 
     story.extend(
         [
             Paragraph('REPÚBLICA DE HONDURAS', sar_subtitle),
-            Paragraph(
-                'SERVICIO DE ADMINISTRACIÓN DE RENTAS (SAR)',
-                ParagraphStyle(
-                    'SarAgency',
-                    parent=sar_subtitle,
-                    fontName='Helvetica-Bold',
-                    fontSize=11,
-                    textColor=colors.HexColor('#0f172a'),
-                ),
-            ),
-            Spacer(1, 8),
-            Paragraph('INFORME TRIMESTRAL DE CARTERA Y OPERACIONES', sar_title),
-            Paragraph('Préstamos y cobros — contribuyente', sar_subtitle),
+            Paragraph('SERVICIO DE ADMINISTRACIÓN DE RENTAS (SAR)', sar_subtitle),
             Spacer(1, 10),
+            Paragraph('INFORME TRIMESTRAL DE CARTERA Y OPERACIONES', sar_title),
+            Paragraph(
+                f'Periodo: {_TRIMESTRE_NOMBRE.get(trimestre, f"Trimestre {trimestre}")} — Año {anio}',
+                sar_subtitle,
+            ),
+            Paragraph('Microfinanciera / contribuyente', sar_subtitle_normal),
+            Spacer(1, 12),
         ]
     )
 
@@ -168,21 +191,7 @@ def exportar_reporte_sar_trimestral_pdf(datos: dict) -> bytes:
         ],
         colWidths=[45 * mm, TABLE_WIDTH_MM * mm - 45 * mm],
     )
-    periodo_tbl.setStyle(
-        TableStyle(
-            [
-                ('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#e8eef5')),
-                ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, -1), 9),
-                ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#94a3b8')),
-                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-                ('LEFTPADDING', (0, 0), (-1, -1), 6),
-                ('RIGHTPADDING', (0, 0), (-1, -1), 6),
-                ('TOPPADDING', (0, 0), (-1, -1), 5),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
-            ]
-        )
-    )
+    periodo_tbl.setStyle(_estilo_tabla_etiquetas())
     story.extend([periodo_tbl, Spacer(1, 8)])
 
     story.append(Paragraph('I. Datos del contribuyente', section))
@@ -197,20 +206,7 @@ def exportar_reporte_sar_trimestral_pdf(datos: dict) -> bytes:
         ],
         colWidths=[40 * mm, TABLE_WIDTH_MM * mm - 40 * mm],
     )
-    contrib_tbl.setStyle(
-        TableStyle(
-            [
-                ('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#f1f5f9')),
-                ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, -1), 9),
-                ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#cbd5e1')),
-                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-                ('LEFTPADDING', (0, 0), (-1, -1), 6),
-                ('TOPPADDING', (0, 0), (-1, -1), 4),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-            ]
-        )
-    )
+    contrib_tbl.setStyle(_estilo_tabla_etiquetas())
     story.extend([contrib_tbl, Spacer(1, 6)])
 
     story.append(Paragraph('II. Detalle de operaciones (trimestre)', section))
@@ -271,8 +267,8 @@ def exportar_reporte_sar_trimestral_pdf(datos: dict) -> bytes:
         colWidths=[80 * mm, 35 * mm, TABLE_WIDTH_MM * mm - 115 * mm],
     )
     cartera_style = _estilo_tabla_datos()
-    cartera_style.add('BACKGROUND', (0, 3), (-1, 3), colors.HexColor('#e2e8f0'))
     cartera_style.add('FONTNAME', (0, 3), (-1, 3), 'Helvetica-Bold')
+    cartera_style.add('BACKGROUND', (0, 3), (-1, 3), _COLOR_GRIS_CLARO)
     cartera_tbl.setStyle(cartera_style)
     story.extend([cartera_tbl, Spacer(1, 6)])
 
@@ -295,7 +291,7 @@ def exportar_reporte_sar_trimestral_pdf(datos: dict) -> bytes:
     mora_tbl.setStyle(_estilo_tabla_datos())
     story.extend(
         [
-            Paragraph('Cartera vencida por antigüedad de mora', section),
+            Paragraph('Cartera vencida por antigüedad de mora', subsection),
             mora_tbl,
             Spacer(1, 6),
         ]
@@ -380,6 +376,9 @@ def exportar_reporte_sar_trimestral_pdf(datos: dict) -> bytes:
         TableStyle(
             [
                 ('FONTSIZE', (0, 0), (-1, -1), 9),
+                ('FONTNAME', (0, 1), (-1, 1), 'Helvetica-Bold'),
+                ('FONTNAME', (0, 4), (0, 4), 'Helvetica-Bold'),
+                ('TEXTCOLOR', (0, 0), (-1, -1), _COLOR_NEGRO),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
                 ('TOPPADDING', (0, 0), (-1, -1), 8),
                 ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
@@ -395,7 +394,13 @@ def exportar_reporte_sar_trimestral_pdf(datos: dict) -> bytes:
                 f'{formato_fecha_hora_hn(timezone.localtime(timezone.now()))}. '
                 'Uso interno y presentación ante autoridades competentes según normativa vigente.'
             ),
-            ParagraphStyle('SarFooter', parent=legal, alignment=1, fontSize=7),
+            ParagraphStyle(
+                'SarFooter',
+                parent=legal,
+                alignment=1,
+                fontSize=8,
+                textColor=_COLOR_GRIS_MEDIO,
+            ),
         )
     )
 
@@ -412,19 +417,42 @@ def _decimal_pct(value: str | Decimal | float | int | None) -> str:
         return str(value)
 
 
-def _estilo_tabla_datos() -> TableStyle:
+def _estilo_tabla_etiquetas() -> TableStyle:
+    """Tablas clave-valor (encabezado, contribuyente)."""
     return TableStyle(
         [
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1e3a5f')),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('BACKGROUND', (0, 0), (0, -1), _COLOR_GRIS_CLARO),
+            ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+            ('FONTNAME', (1, 0), (1, -1), 'Helvetica'),
+            ('TEXTCOLOR', (0, 0), (-1, -1), _COLOR_NEGRO),
             ('FONTSIZE', (0, 0), (-1, -1), 9),
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#94a3b8')),
+            ('GRID', (0, 0), (-1, -1), 0.75, _COLOR_BORDE),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-            ('LEFTPADDING', (0, 0), (-1, -1), 6),
-            ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+            ('LEFTPADDING', (0, 0), (-1, -1), 7),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 7),
             ('TOPPADDING', (0, 0), (-1, -1), 5),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
-            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f8fafc')]),
+        ]
+    )
+
+
+def _estilo_tabla_datos() -> TableStyle:
+    """Tablas de datos: encabezado negro sobre gris, cuerpo formal."""
+    return TableStyle(
+        [
+            ('BACKGROUND', (0, 0), (-1, 0), _COLOR_GRIS_CLARO),
+            ('TEXTCOLOR', (0, 0), (-1, 0), _COLOR_NEGRO),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+            ('TEXTCOLOR', (0, 1), (-1, -1), _COLOR_NEGRO),
+            ('FONTSIZE', (0, 0), (-1, -1), 9),
+            ('GRID', (0, 0), (-1, -1), 0.75, _COLOR_BORDE),
+            ('LINEBELOW', (0, 0), (-1, 0), 1.25, _COLOR_BORDE),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('LEFTPADDING', (0, 0), (-1, -1), 7),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 7),
+            ('TOPPADDING', (0, 0), (-1, -1), 5),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, _COLOR_GRIS_FILA]),
         ]
     )
