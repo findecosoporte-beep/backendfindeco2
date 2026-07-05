@@ -71,7 +71,7 @@ def asignar_numero_factura_sar(pago: Pago) -> str | None:
     if getattr(pago, 'id_pago_factura_id', None):
         return None
 
-    config = ConfiguracionFacturacion.objects.select_for_update().get(pk=1)
+    config, _ = ConfiguracionFacturacion.objects.select_for_update().get_or_create(pk=1)
     if not config.usar_numeracion_sar:
         return None
 

@@ -27,6 +27,7 @@ from .core.facturacion_sar import (
     formatear_numero_factura_sar,
     texto_rango_autorizado,
 )
+from .core.fechas import calculate_fecha_cuota, calculate_fecha_vencimiento
 from .core.money import round_money
 from .core.prestamo_calc import (
     periodos_desde_plazo,

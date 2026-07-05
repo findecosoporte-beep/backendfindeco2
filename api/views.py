@@ -355,6 +355,18 @@ def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
                 total_abono = round_money(Decimal(str(item.get('total', '0'))))
                 if total_abono > 0:
                     dibujar_linea_detalle('Abono a capital', total_abono)
+    elif len(lineas_detalle) > 1:
+        for item in lineas_detalle:
+            if item.get('abono_capital'):
+                total_abono = round_money(Decimal(str(item.get('total', '0'))))
+                if total_abono > 0:
+                    dibujar_linea_detalle('Abono a capital', total_abono)
+            elif item.get('cuota') is not None:
+                monto_cuota = round_money(Decimal(str(item.get('total', '0'))))
+                etiqueta = f'Cuota #{item["cuota"]}'
+                if item.get('parcial'):
+                    etiqueta = f'{etiqueta} (parcial)'
+                dibujar_linea_detalle(etiqueta, monto_cuota)
     elif not lineas_detalle:
         producto_label = f'COBRO {pago.documento or "PAGO"}'
         dibujar_linea_detalle(producto_label, total_venta)

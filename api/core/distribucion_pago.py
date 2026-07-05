@@ -5,6 +5,7 @@ from decimal import Decimal
 
 from .cuotas import extract_cuota_numero_from_documento
 from .money import round_money
+from .movimientos_pago import abonado_por_cuota_desde_pagos as _abonado_por_cuota_desde_pagos
 from .reporte_saldos import monto_cuota_programada
 
 CUOTA_PAGADA_TOLERANCIA = Decimal('0.01')
@@ -32,14 +33,8 @@ def total_abonado_prestamo(pagos) -> Decimal:
 
 
 def abonado_por_cuota_desde_pagos(pagos) -> dict[int, Decimal]:
-    """Suma capital+interés+mora abonado por número de cuota."""
-    abonado: dict[int, Decimal] = defaultdict(lambda: Decimal('0.00'))
-    for pg in pagos:
-        numero = extract_cuota_numero_from_documento(pg.documento)
-        if numero is None:
-            continue
-        abonado[numero] += Decimal(pg.capital) + Decimal(pg.interes) + Decimal(pg.mora)
-    return dict(abonado)
+    """Suma capital+interés+mora abonado por número de cuota (incluye detalle_distribucion)."""
+    return _abonado_por_cuota_desde_pagos(pagos)
 
 
 def cuota_esta_pagada(abonado: Decimal, total_programado: Decimal) -> bool:

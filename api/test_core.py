@@ -277,3 +277,48 @@ class CoreDistribucionPagoTestCase(SimpleTestCase):
         cuota = self.Cuota(2, '833.33', '250.00', total='1083.33')
         self.assertEqual(pendiente_cuota(cuota, Decimal('916.67')), Decimal('166.66'))
 
+
+class MovimientosPagoTestCase(SimpleTestCase):
+    """Desglose cuota vs abono_capital desde detalle_distribucion."""
+
+    class PagoStub:
+        def __init__(self, **kwargs):
+            self.id_pago = kwargs.get('id_pago', 1)
+            self.fecha_pago = kwargs.get('fecha_pago', date.today())
+            self.cobrado_en = kwargs.get('cobrado_en')
+            self.documento = kwargs.get('documento')
+            self.capital = kwargs.get('capital', Decimal('0'))
+            self.interes = kwargs.get('interes', Decimal('0'))
+            self.mora = kwargs.get('mora', Decimal('0'))
+            self.detalle_distribucion = kwargs.get('detalle_distribucion')
+            self.numero_factura = kwargs.get('numero_factura')
+
+    def test_movimientos_separan_cuota_y_abono_capital(self):
+        from .core.movimientos_pago import (
+            abonado_por_cuota_desde_movimientos,
+            abonos_capital_desde_pagos,
+            movimientos_desde_pago,
+            pago_tiene_varios_movimientos,
+        )
+
+        pago = self.PagoStub(
+            id_pago=10,
+            documento='Cuota 1',
+            capital=Decimal('2000.00'),
+            interes=Decimal('0.00'),
+            detalle_distribucion=[
+                {'cuota': 1, 'capital': '1083.33', 'interes': '250.00', 'mora': '0.00', 'total': '1333.33'},
+                {'cuota': 2, 'capital': '500.00', 'interes': '166.67', 'mora': '0.00', 'total': '666.67', 'parcial': True},
+                {'abono_capital': True, 'capital': '500.00', 'interes': '0.00', 'mora': '0.00', 'total': '500.00'},
+            ],
+        )
+        movs = movimientos_desde_pago(pago)
+        self.assertEqual(len(movs), 3)
+        self.assertTrue(pago_tiene_varios_movimientos(pago))
+        abonado = abonado_por_cuota_desde_movimientos([pago])
+        self.assertEqual(abonado[1], Decimal('1333.33'))
+        self.assertEqual(abonado[2], Decimal('666.67'))
+        abonos = abonos_capital_desde_pagos([pago])
+        self.assertEqual(len(abonos), 1)
+        self.assertEqual(Decimal(abonos[0]['total']), Decimal('500.00'))
+

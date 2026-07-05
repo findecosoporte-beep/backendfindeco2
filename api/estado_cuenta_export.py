@@ -16,6 +16,11 @@ from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, Tabl
 
 from .core.cuotas import extract_cuota_numero_from_documento
 from .core.distribucion_pago import cuotas_cubiertas_por_pago_acumulado, total_abonado_prestamo
+from .core.movimientos_pago import (
+    abonado_por_cuota_desde_movimientos,
+    abonos_capital_desde_pagos,
+    cuota_pago_desde_movimientos,
+)
 from .core.fechas_display import ahora_local_iso, cobrado_en_efectivo, formato_fecha_hn, formato_fecha_hora_hn, formato_hora_hn
 from .core.findeco_brand import platypus_logo_findeco
 from .core.money import round_money
@@ -60,7 +65,17 @@ def _money_pdf(value: str | Decimal | float | int) -> str:
 
 
 def pago_por_cuota_con_fallback(cuotas: list[PrestamoCuota], pagos_ordenados: list[Pago]) -> dict[int, Pago]:
-    """Asigna pagos a cuotas por documento o, en su defecto, por orden cronológico."""
+    """Asigna pagos a cuotas usando movimientos tipo cuota."""
+    mapa_refs = cuota_pago_desde_movimientos(pagos_ordenados)
+    pago_por_id = {p.id_pago: p for p in pagos_ordenados}
+    resultado: dict[int, Pago] = {}
+    for numero, ref in mapa_refs.items():
+        pago = pago_por_id.get(ref['id_pago'])
+        if pago is not None:
+            resultado[numero] = pago
+    if resultado:
+        return resultado
+    # Compatibilidad con pagos antiguos sin detalle_distribucion.
     mapa: dict[int, Pago] = {}
     usados: set[int] = set()
     for pago in pagos_ordenados:
@@ -87,6 +102,8 @@ def recolectar_datos_estado_cuenta(prestamo: Prestamo) -> dict:
         Pago.objects.filter(id_prestamo=prestamo, anulado=False).order_by('fecha_pago', 'id_pago'),
     )
     pago_map = pago_por_cuota_con_fallback(cuotas, pagos)
+    abonado_por_cuota = abonado_por_cuota_desde_movimientos(pagos)
+    abonos_capital = abonos_capital_desde_pagos(pagos)
 
     # Cuotas cubiertas por el acumulado total pagado (aunque el excedente haya
     # quedado como abono a capital y no como "Cuota N" de cada una): el cliente
@@ -98,16 +115,19 @@ def recolectar_datos_estado_cuenta(prestamo: Prestamo) -> dict:
     filas_cuotas = []
     for cuota in cuotas:
         pago = pago_map.get(cuota.numero_cuota)
-        if pago is not None:
+        abonado_cuota = abonado_por_cuota.get(cuota.numero_cuota, Decimal('0.00'))
+        total_cuota = monto_cuota_programada(cuota)
+        if pago is not None or abonado_cuota >= total_cuota - Decimal('0.01'):
             estado = 'Pagada'
-            fecha_pago_val = pago.fecha_pago.isoformat()
-            hora_val = formato_hora_hn(cobrado_en_efectivo(pago))
-            documento_val = pago.documento or f'Cuota {cuota.numero_cuota}'
+            ref_pago = pago or ultimo_pago
+            fecha_pago_val = ref_pago.fecha_pago.isoformat() if ref_pago else ''
+            hora_val = formato_hora_hn(cobrado_en_efectivo(ref_pago)) if ref_pago else ''
+            documento_val = f'Cuota {cuota.numero_cuota}'
         elif cuota.numero_cuota in cubiertas_por_acumulado and ultimo_pago is not None:
             estado = 'Pagada'
             fecha_pago_val = ultimo_pago.fecha_pago.isoformat()
             hora_val = formato_hora_hn(cobrado_en_efectivo(ultimo_pago))
-            documento_val = 'Cubierta por abono a capital'
+            documento_val = f'Cuota {cuota.numero_cuota}'
         else:
             estado = 'Pendiente'
             fecha_pago_val = ''
@@ -134,6 +154,20 @@ def recolectar_datos_estado_cuenta(prestamo: Prestamo) -> dict:
         tot_interes += Decimal(pago.interes)
     total_abonado = round_money(tot_capital + tot_interes)
 
+    pago_por_id = {p.id_pago: p for p in pagos}
+    filas_abonos_capital = []
+    for fila in abonos_capital:
+        pago_ref = pago_por_id.get(fila.get('id_pago'))
+        filas_abonos_capital.append(
+            {
+                'fecha_pago': fila.get('fecha_pago') or '',
+                'hora_pago': formato_hora_hn(cobrado_en_efectivo(pago_ref)) if pago_ref else '',
+                'monto': fila.get('total') or '0',
+                'documento': fila.get('documento') or 'Abono a capital',
+                'id_pago': fila.get('id_pago'),
+            }
+        )
+
     return {
         'numero_prestamo': prestamo.numero_prestamo,
         'nombre_cliente': cliente.nombre if cliente else '',
@@ -143,6 +177,7 @@ def recolectar_datos_estado_cuenta(prestamo: Prestamo) -> dict:
         'estado_prestamo': ETIQUETAS_ESTADO_PRESTAMO.get(prestamo.estado, prestamo.estado),
         'fecha_emision': ahora_local_iso(),
         'cuotas': filas_cuotas,
+        'abonos_capital': filas_abonos_capital,
         'resumen': {
             'cuotas_pagadas': sum(1 for f in filas_cuotas if f['estado'] == 'Pagada'),
             'cuotas_pendientes': sum(1 for f in filas_cuotas if f['estado'] == 'Pendiente'),
