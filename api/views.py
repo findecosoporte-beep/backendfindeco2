@@ -1817,7 +1817,13 @@ class ReporteSarTrimestralView(APIView):
         datos = generar_reporte_sar_trimestral(anio, trimestre)
         formato = (request.query_params.get('formato') or 'json').strip().lower()
         if formato == 'pdf':
-            pdf_content = exportar_reporte_sar_trimestral_pdf(datos)
+            try:
+                pdf_content = exportar_reporte_sar_trimestral_pdf(datos)
+            except Exception as exc:
+                return Response(
+                    {'detail': f'No se pudo generar el PDF del reporte SAR: {exc}'},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
             response = HttpResponse(pdf_content, content_type='application/pdf')
             filename = nombre_archivo_reporte_sar(trimestre, anio)
             response['Content-Disposition'] = f'inline; filename="{filename}"'
