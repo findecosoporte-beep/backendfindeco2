@@ -1662,6 +1662,39 @@ class ReporteSarTrimestralTestCase(APITestCase):
         self.assertEqual(response.data['ingresos_intereses'], '200.00')
         self.assertEqual(response.data['pagos_recibidos'], '2200.00')
         self.assertGreaterEqual(response.data['cartera_vigente']['prestamos'], 1)
+        self.assertIn('encabezado', response.data)
+        self.assertIn('detalle_operaciones', response.data)
+        self.assertEqual(
+            response.data['detalle_operaciones']['total_prestamos_otorgados'],
+            1,
+        )
+        self.assertEqual(response.data['ingresos']['total_abonos_capital'], '2000.00')
+        self.assertIn('por_rango_dias', response.data['cartera_vencida'])
+        self.assertIn('porcentaje_morosidad', response.data['resumen'])
+
+    def test_reporte_sar_clasifica_mora_por_rango(self):
+        self._auth_with_role(role='supervisor', email='sar.mora@test.com')
+        cliente = Cliente.objects.create(nombre='Cliente Mora', dni='0801-2000-00998')
+        usuario_operativo = Usuario.objects.get(correo='sar.mora@test.com')
+        Prestamo.objects.create(
+            numero_prestamo='PRE-MORA-45',
+            id_cliente=cliente,
+            id_usuario=usuario_operativo,
+            monto=Decimal('5000.00'),
+            plazo=4,
+            tasa_interes=Decimal('12.00'),
+            estado='mora',
+            dias_mora=45,
+            forma_pago='semanal',
+            forma_desembolso='efectivo',
+            comision=Decimal('2.00'),
+            fecha_entrega=date(2025, 12, 1),
+            fecha_vencimiento=date(2026, 4, 1),
+        )
+        response = self.client.get('/api/v1/reportes/sar/?trimestre=1&anio=2026')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        rango = response.data['cartera_vencida']['por_rango_dias']['de_31_a_60']
+        self.assertGreaterEqual(rango['prestamos'], 1)
 
     def test_cliente_puede_tener_rtn(self):
         self._auth_with_role(role='supervisor', email='cliente.rtn@test.com')

@@ -14,7 +14,6 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-from .core.facturacion_sar import obtener_configuracion_facturacion
 from .core.fechas_display import formato_fecha_hn, formato_fecha_hora_hn
 from .core.findeco_brand import platypus_logo_findeco
 
@@ -26,6 +25,13 @@ _TRIMESTRE_NOMBRE = {
     2: 'Segundo trimestre (abril – junio)',
     3: 'Tercer trimestre (julio – septiembre)',
     4: 'Cuarto trimestre (octubre – diciembre)',
+}
+
+_LABEL_RANGO_MORA = {
+    'hasta_30': '1 – 30 días',
+    'de_31_a_60': '31 – 60 días',
+    'de_61_a_90': '61 – 90 días',
+    'mas_de_90': 'Más de 90 días',
 }
 
 
@@ -61,25 +67,23 @@ def _fecha_display(valor: date | str | None) -> str:
 
 def exportar_reporte_sar_trimestral_pdf(datos: dict) -> bytes:
     """Genera PDF formal para informe trimestral de cartera (formato SAR Honduras)."""
-    config = obtener_configuracion_facturacion()
-    razon = (config.razon_social or config.nombre_comercial or 'FINDECO').strip()
-    rtn_emisor = (config.rtn or '').strip() or '—'
-    direccion = ', '.join(
-        part
-        for part in [
-            (config.direccion or '').strip(),
-            (config.ciudad or '').strip(),
-        ]
-        if part
-    ) or '—'
-    telefono = (config.telefono or '').strip() or '—'
+    encabezado = datos.get('encabezado') or {}
+    razon = (encabezado.get('nombre_entidad') or 'FINDECO').strip()
+    rtn_emisor = (encabezado.get('rtn') or '').strip() or '—'
+    direccion = (encabezado.get('direccion') or '').strip() or '—'
+    telefono = (encabezado.get('telefono') or '').strip() or '—'
+    correo = (encabezado.get('correo') or '').strip() or '—'
 
     trimestre = int(datos['trimestre'])
     anio = int(datos['anio'])
+    operaciones = datos.get('detalle_operaciones') or {}
     vigente = datos.get('cartera_vigente', {})
     vencida = datos.get('cartera_vencida', {})
-    total_prestamos_cartera = int(vigente.get('prestamos', 0)) + int(vencida.get('prestamos', 0))
-    total_saldo_cartera = Decimal(vigente.get('saldo', '0')) + Decimal(vencida.get('saldo', '0'))
+    ingresos = datos.get('ingresos') or {}
+    resumen = datos.get('resumen') or {}
+    mora_rangos = vencida.get('por_rango_dias') or {}
+    total_prestamos_cartera = int(resumen.get('cartera_total_prestamos', 0))
+    total_saldo_cartera = resumen.get('cartera_total_saldo', '0')
 
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -184,10 +188,12 @@ def exportar_reporte_sar_trimestral_pdf(datos: dict) -> bytes:
     story.append(Paragraph('I. Datos del contribuyente', section))
     contrib_tbl = Table(
         [
-            ['Razón social', razon],
+            ['Nombre de la entidad', razon],
             ['RTN', rtn_emisor],
+            ['Trimestre / Año', f'T{trimestre} — {anio}'],
             ['Dirección', direccion],
             ['Teléfono', telefono],
+            ['Correo', correo],
         ],
         colWidths=[40 * mm, TABLE_WIDTH_MM * mm - 40 * mm],
     )
@@ -207,17 +213,37 @@ def exportar_reporte_sar_trimestral_pdf(datos: dict) -> bytes:
     )
     story.extend([contrib_tbl, Spacer(1, 6)])
 
-    story.append(Paragraph('II. Préstamos otorgados en el trimestre', section))
+    story.append(Paragraph('II. Detalle de operaciones (trimestre)', section))
     otorgados_tbl = Table(
         [
-            ['Concepto', 'Cantidad', 'Monto (Lempiras)'],
+            ['Concepto', 'Valor'],
             [
-                'Total préstamos otorgados',
-                _int_text(datos.get('total_prestamos_otorgados', 0)),
-                _money_pdf(datos.get('monto_prestamos_otorgados', '0')),
+                'Número de préstamos otorgados',
+                _int_text(operaciones.get('total_prestamos_otorgados', 0)),
+            ],
+            [
+                'Monto total de préstamos',
+                _money_pdf(operaciones.get('monto_prestamos_otorgados', '0')),
+            ],
+            [
+                'Tasa de interés promedio (%)',
+                _decimal_pct(operaciones.get('tasa_interes_promedio')),
+            ],
+            [
+                'Tasa de interés mínima / máxima (%)',
+                f'{_decimal_pct(operaciones.get("tasa_interes_minima"))} / '
+                f'{_decimal_pct(operaciones.get("tasa_interes_maxima"))}',
+            ],
+            [
+                'Plazo promedio (cuotas)',
+                _decimal_pct(operaciones.get('plazo_promedio')),
+            ],
+            [
+                'Comisiones por desembolsos',
+                _money_pdf(operaciones.get('comisiones_desembolsadas', '0')),
             ],
         ],
-        colWidths=[80 * mm, 35 * mm, TABLE_WIDTH_MM * mm - 115 * mm],
+        colWidths=[95 * mm, TABLE_WIDTH_MM * mm - 95 * mm],
     )
     otorgados_tbl.setStyle(_estilo_tabla_datos())
     story.extend([otorgados_tbl, Spacer(1, 6)])
@@ -250,23 +276,83 @@ def exportar_reporte_sar_trimestral_pdf(datos: dict) -> bytes:
     cartera_tbl.setStyle(cartera_style)
     story.extend([cartera_tbl, Spacer(1, 6)])
 
-    story.append(Paragraph('IV. Ingresos y cobros del trimestre', section))
+    mora_rows = [
+        ['Rango días mora', 'N.º préstamos', 'Saldo (L)'],
+    ]
+    for clave, etiqueta in _LABEL_RANGO_MORA.items():
+        bloque = mora_rangos.get(clave, {})
+        mora_rows.append(
+            [
+                etiqueta,
+                _int_text(bloque.get('prestamos', 0)),
+                _money_pdf(bloque.get('saldo', '0')),
+            ]
+        )
+    mora_tbl = Table(
+        mora_rows,
+        colWidths=[55 * mm, 35 * mm, TABLE_WIDTH_MM * mm - 90 * mm],
+    )
+    mora_tbl.setStyle(_estilo_tabla_datos())
+    story.extend(
+        [
+            Paragraph('Cartera vencida por antigüedad de mora', section),
+            mora_tbl,
+            Spacer(1, 6),
+        ]
+    )
+
+    story.append(Paragraph('IV. Ingresos del trimestre', section))
     ingresos_tbl = Table(
         [
             ['Concepto', 'Monto (Lempiras)'],
             [
-                'Ingresos por intereses cobrados',
-                _money_pdf(datos.get('ingresos_intereses', '0')),
+                'Intereses generados / cobrados',
+                _money_pdf(ingresos.get('intereses_generados', '0')),
             ],
             [
-                'Pagos recibidos (capital + interés + mora)',
-                _money_pdf(datos.get('pagos_recibidos', '0')),
+                'Comisiones cobradas (desembolsos)',
+                _money_pdf(ingresos.get('comisiones_cobradas', '0')),
+            ],
+            [
+                'Pagos recibidos (total)',
+                _money_pdf(ingresos.get('pagos_recibidos', '0')),
+            ],
+            [
+                'Total abonos a capital',
+                _money_pdf(ingresos.get('total_abonos_capital', '0')),
+            ],
+            [
+                'Total intereses pagados',
+                _money_pdf(ingresos.get('total_intereses_pagados', '0')),
+            ],
+            [
+                'Total mora pagada',
+                _money_pdf(ingresos.get('total_mora_pagada', '0')),
             ],
         ],
         colWidths=[100 * mm, TABLE_WIDTH_MM * mm - 100 * mm],
     )
     ingresos_tbl.setStyle(_estilo_tabla_datos())
-    story.extend([ingresos_tbl, Spacer(1, 12)])
+    story.extend([ingresos_tbl, Spacer(1, 6)])
+
+    story.append(Paragraph('V. Resumen', section))
+    resumen_tbl = Table(
+        [
+            ['Concepto', 'Valor'],
+            [
+                'Cartera total (vigente + vencida)',
+                f'{_int_text(total_prestamos_cartera)} préstamos — '
+                f'{_money_pdf(total_saldo_cartera)}',
+            ],
+            [
+                'Indicador de morosidad',
+                f'{_decimal_pct(resumen.get("porcentaje_morosidad"))}% del saldo en cartera vencida',
+            ],
+        ],
+        colWidths=[95 * mm, TABLE_WIDTH_MM * mm - 95 * mm],
+    )
+    resumen_tbl.setStyle(_estilo_tabla_datos())
+    story.extend([resumen_tbl, Spacer(1, 12)])
 
     story.append(
         Paragraph(
@@ -315,6 +401,15 @@ def exportar_reporte_sar_trimestral_pdf(datos: dict) -> bytes:
 
     doc.build(story)
     return buffer.getvalue()
+
+
+def _decimal_pct(value: str | Decimal | float | int | None) -> str:
+    if value is None or value == '':
+        return '0.00'
+    try:
+        return f'{Decimal(str(value)):.2f}'
+    except (ArithmeticError, ValueError):
+        return str(value)
 
 
 def _estilo_tabla_datos() -> TableStyle:
