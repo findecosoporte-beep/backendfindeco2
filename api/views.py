@@ -264,10 +264,13 @@ def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
         center_text(config.ciudad.strip(), emisor_size - 0.6, False, 3.8)
     if config.telefono.strip():
         center_text(f'Tel: {config.telefono.strip()}', emisor_size - 0.6, False, 3.8)
+    if config.correo.strip():
+        center_text(config.correo.strip(), emisor_size - 0.6, False, 3.8)
 
     title_size = 10 if is_80mm else 9
     folio_size = 9 if is_80mm else 8
-    center_text('FACTURA ELECTRONICA', title_size, True)
+    titulo_factura = 'FACTURA' if config.cai.strip() else 'FACTURA ELECTRONICA'
+    center_text(titulo_factura, title_size, True)
     folio = pago.numero_factura or f'F{pago.id_pago:03d}-{pago.id_prestamo.id_prestamo:08d}'
     center_text(folio, folio_size, True, 4.8)
     if config.cai.strip():
@@ -1635,13 +1638,19 @@ class PagoViewSet(viewsets.ModelViewSet):
     def factura_pdf(self, request, pk=None):
         """Retorna un PDF imprimible de factura para un pago."""
         pago = _resolver_pago_factura(self.get_object())
-        ticket_format = request.query_params.get('ticket', '58').strip()
+        config = obtener_configuracion_facturacion()
+        ticket_format = request.query_params.get('ticket', '').strip()
         if ticket_format not in ('58', '80'):
-            ticket_format = '58'
+            ticket_format = (
+                config.formato_ticket
+                if config.formato_ticket in ('58', '80')
+                else '58'
+            )
         pdf_content = _build_pago_invoice_pdf(pago, ticket_format=ticket_format)
+        folio = pago.numero_factura or f'F{pago.id_pago:03d}'
         response = HttpResponse(pdf_content, content_type='application/pdf')
         response['Content-Disposition'] = (
-            f'inline; filename="factura-pago-{pago.id_pago}-{ticket_format}mm.pdf"'
+            f'inline; filename="factura-{folio}-{ticket_format}mm.pdf"'
         )
         return response
 
