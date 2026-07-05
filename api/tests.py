@@ -1595,6 +1595,87 @@ class ConfiguracionFacturacionTestCase(APITestCase):
         self.assertFalse(Prestamo.objects.filter(id_prestamo=prestamo.id_prestamo).exists())
 
 
+class ReporteSarTrimestralTestCase(APITestCase):
+    """Reporte regulatorio trimestral SAR."""
+
+    def setUp(self):
+        self.user_model = get_user_model()
+
+    def _auth_with_role(self, role: str, email: str):
+        django_user = self.user_model.objects.create_user(
+            username=email,
+            email=email,
+            password='Secreta123!',
+        )
+        Usuario.objects.create(
+            nombre=f'Usuario {role}',
+            rol=role,
+            correo=email,
+            clave='hash-falso',
+        )
+        self.client.force_authenticate(user=django_user)
+
+    def test_reporte_sar_trimestral_requiere_parametros(self):
+        self._auth_with_role(role='supervisor', email='sar.param@test.com')
+        response = self.client.get('/api/v1/reportes/sar/')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_reporte_sar_trimestral_consolida_periodo(self):
+        self._auth_with_role(role='supervisor', email='sar.reporte@test.com')
+        cliente = Cliente.objects.create(
+            nombre='Cliente SAR',
+            dni='0801-2000-00997',
+            rtn='08019009998877',
+        )
+        usuario_operativo = Usuario.objects.get(correo='sar.reporte@test.com')
+        cartera = Cartera.objects.create(nombre='Cartera SAR', dia_cobro='lunes')
+        prestamo = Prestamo.objects.create(
+            numero_prestamo='PRE-SAR-001',
+            id_cliente=cliente,
+            id_usuario=usuario_operativo,
+            id_cartera=cartera,
+            monto=Decimal('10000.00'),
+            plazo=4,
+            tasa_interes=Decimal('10.00'),
+            estado='activo',
+            forma_pago='semanal',
+            forma_desembolso='efectivo',
+            comision=Decimal('0.00'),
+            fecha_entrega=date(2026, 2, 15),
+            fecha_vencimiento=date(2026, 6, 15),
+        )
+        Pago.objects.create(
+            id_prestamo=prestamo,
+            fecha_pago=date(2026, 3, 10),
+            documento='Cuota 1',
+            capital=Decimal('2000.00'),
+            interes=Decimal('200.00'),
+            mora=Decimal('0.00'),
+            saldo=Decimal('8000.00'),
+        )
+        response = self.client.get('/api/v1/reportes/sar/?trimestre=1&anio=2026')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['trimestre'], 1)
+        self.assertEqual(response.data['anio'], 2026)
+        self.assertEqual(response.data['total_prestamos_otorgados'], 1)
+        self.assertEqual(response.data['monto_prestamos_otorgados'], '10000.00')
+        self.assertEqual(response.data['ingresos_intereses'], '200.00')
+        self.assertEqual(response.data['pagos_recibidos'], '2200.00')
+        self.assertGreaterEqual(response.data['cartera_vigente']['prestamos'], 1)
+
+    def test_cliente_puede_tener_rtn(self):
+        self._auth_with_role(role='supervisor', email='cliente.rtn@test.com')
+        payload = {
+            'nombre': 'Empresa Demo',
+            'dni': '0801-2000-00996',
+            'rtn': '08019001112233',
+            'telefono': '9999-0000',
+        }
+        response = self.client.post('/api/v1/clientes/', data=payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['rtn'], '08019001112233')
+
+
 class OpenApiSettingsTestCase(APITestCase):
     """Swagger solo cuando OPENAPI_ENABLED está activo."""
 

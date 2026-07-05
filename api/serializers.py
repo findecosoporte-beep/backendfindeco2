@@ -639,10 +639,17 @@ class PagoSerializer(serializers.ModelSerializer):
         write_only=True,
         help_text='Monto total cobrado; si excede la cuota, se aplica a las siguientes.',
     )
+    monto_total = serializers.SerializerMethodField(
+        help_text='Suma capital + interes + mora del cobro.',
+    )
 
     class Meta:
         model = Pago
         fields = '__all__'
+
+    def get_monto_total(self, obj: Pago) -> str:
+        total = Decimal(obj.capital) + Decimal(obj.interes) + Decimal(obj.mora)
+        return str(round_money(total))
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

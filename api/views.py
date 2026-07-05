@@ -68,7 +68,7 @@ from .core.distribucion_pago import (
     cuotas_pagadas_completas,
     pendiente_cuota,
 )
-from .core.reporte_saldos import monto_cuota_programada, saldos_reporte_integracion
+from .core.reporte_sar_regulatorio import generar_reporte_sar_trimestral
 from .cobrador_scope import (
     carteras_ids_para_usuario,
     filtrar_pagos_por_cobrador,
@@ -1792,3 +1792,25 @@ class ConfiguracionFacturacionView(APIView):
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data)
+
+
+class ReporteSarTrimestralView(APIView):
+    """Reporte trimestral regulatorio: cartera, desembolsos e ingresos."""
+
+    permission_classes = (IsAuthenticated,)
+
+    def get(self, request):
+        trimestre_raw = (request.query_params.get('trimestre') or '').strip()
+        anio_raw = (request.query_params.get('anio') or '').strip()
+        try:
+            trimestre = int(trimestre_raw)
+            anio = int(anio_raw)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(
+                {'detail': 'Indique trimestre (1-4) y anio validos.'},
+            ) from exc
+        if trimestre < 1 or trimestre > 4:
+            raise ValidationError({'trimestre': 'Debe estar entre 1 y 4.'})
+        if anio < 2000 or anio > 2100:
+            raise ValidationError({'anio': 'Anio fuera de rango.'})
+        return Response(generar_reporte_sar_trimestral(anio, trimestre))

@@ -18,6 +18,7 @@ DIAS_VALIDOS = {choice[0] for choice in DIA_SEMANA_COBRANZA_CHOICES}
 CLIENTE_EXCEL_COLUMNS: tuple[tuple[str, str], ...] = (
     ('nombre', 'Nombre *'),
     ('dni', 'DNI *'),
+    ('rtn', 'RTN'),
     ('telefono', 'Teléfono'),
     ('dia_cobro_semanal', 'Día cobro semanal'),
     ('direccion_residencia', 'Dirección residencia'),
@@ -31,6 +32,7 @@ CLIENTE_EXCEL_COLUMNS: tuple[tuple[str, str], ...] = (
 EJEMPLO_FILA = (
     'Juan Pérez López',
     '0801-1990-12345',
+    '08019001234567',
     '9999-8888',
     'lunes',
     'Col. Centro, Tegucigalpa',
@@ -47,6 +49,7 @@ HEADER_ALIASES: dict[str, str] = {
     'dni': 'dni',
     'identidad': 'dni',
     'documento': 'dni',
+    'rtn': 'rtn',
     'telefono': 'telefono',
     'teléfono': 'telefono',
     'tel': 'telefono',
@@ -235,6 +238,7 @@ def importar_clientes_xlsx(file_obj, *, actualizar_existentes: bool = False) -> 
             payload = {
                 'nombre': nombre[:100],
                 'dni': dni[:20],
+                'rtn': (_empty_to_none(raw.get('rtn')) or '')[:20] or None,
                 'telefono': _empty_to_none(raw.get('telefono')),
                 'direccion_residencia': _empty_to_none(raw.get('direccion_residencia')),
                 'direccion_negocio': _empty_to_none(raw.get('direccion_negocio')),

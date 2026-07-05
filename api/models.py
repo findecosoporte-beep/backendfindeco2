@@ -22,6 +22,12 @@ class Cliente(models.Model):
     id_cliente = models.AutoField(primary_key=True)
     nombre = models.CharField(max_length=100)
     dni = models.CharField(max_length=20, unique=True)
+    rtn = models.CharField(
+        max_length=20,
+        null=True,
+        blank=True,
+        help_text='RTN del cliente (persona jurídica o cuando aplica facturación).',
+    )
     telefono = models.CharField(max_length=20, null=True, blank=True)
     direccion_residencia = models.CharField(max_length=200, null=True, blank=True)
     direccion_negocio = models.CharField(max_length=200, null=True, blank=True)
