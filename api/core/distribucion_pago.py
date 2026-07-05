@@ -243,6 +243,10 @@ def distribuir_monto_en_cuotas(
 
         capital, interes = _partir_monto_cuota(aplicar, row) if aplicar > 0 else (Decimal('0.00'), Decimal('0.00'))
         abonado_sim[row.numero_cuota] = abonado_sim.get(row.numero_cuota, Decimal('0.00')) + capital + interes + mora_linea
+        es_parcial = (
+            pendiente > 0
+            and aplicar < pendiente - CUOTA_PAGADA_TOLERANCIA
+        )
         lineas.append(
             {
                 'numero_cuota': row.numero_cuota,
@@ -251,9 +255,29 @@ def distribuir_monto_en_cuotas(
                 'interes': interes,
                 'mora': mora_linea,
                 'saldo': saldo_pendiente_con_abonos(plan_rows, abonado_sim),
+                'parcial': es_parcial,
             }
         )
         restante = round_money(restante - aplicar)
         mora_restante = Decimal('0.00')
+
+    if restante > 0:
+        pagado_previo = round_money(sum(abonado_previo.values(), Decimal('0.00')))
+        pagado_en_cobro = round_money(monto_distribuir - restante)
+        saldo_tras_abono = _saldo_tras_monto_pagado(plan_rows, pagado_previo, pagado_en_cobro + restante)
+        lineas.append(
+            {
+                'numero_cuota': None,
+                'abono_capital': True,
+                'documento': 'Abono a capital',
+                'capital': restante,
+                'interes': Decimal('0.00'),
+                'mora': Decimal('0.00'),
+                'saldo': saldo_tras_abono,
+                'liquida_prestamo': saldo_tras_abono <= Decimal('0.00'),
+            }
+        )
+    elif lineas and lineas[-1]['saldo'] <= Decimal('0.00'):
+        lineas[-1]['liquida_prestamo'] = True
 
     return lineas

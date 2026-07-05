@@ -7,6 +7,7 @@ from .views import (
     CarteraViewSet,
     ClienteViewSet,
     ClienteDocumentoViewSet,
+    ConfiguracionFacturacionView,
     ContratoPrestamoViewSet,
     DashboardResumenView,
     HealthView,
@@ -39,5 +40,10 @@ urlpatterns = [
     path('me/', MeView.as_view(), name='me'),
     path('dashboard/', DashboardResumenView.as_view(), name='dashboard'),
     path('prestamos/simular/', SimulacionPrestamoView.as_view(), name='prestamos-simular'),
+    path(
+        'configuracion/facturacion/',
+        ConfiguracionFacturacionView.as_view(),
+        name='configuracion-facturacion',
+    ),
     path('', include(router.urls)),
 ]

@@ -5,6 +5,7 @@ from django.contrib import admin
 from .models import (
     Cartera,
     Cliente,
+    ConfiguracionFacturacion,
     HistorialPrestamo,
     Pago,
     Prestamo,
@@ -109,3 +110,16 @@ class HistorialPrestamoAdmin(admin.ModelAdmin):
 
     list_display = ('id_historial', 'id_cliente', 'numero_prestamo', 'producto', 'monto', 'saldo')
     search_fields = ('numero_prestamo', 'id_cliente__nombre', 'producto')
+
+
+@admin.register(ConfiguracionFacturacion)
+class ConfiguracionFacturacionAdmin(admin.ModelAdmin):
+    """Parametros SAR de facturacion."""
+
+    list_display = (
+        'razon_social',
+        'rtn',
+        'usar_numeracion_sar',
+        'correlativo_actual',
+        'fecha_limite_emision',
+    )

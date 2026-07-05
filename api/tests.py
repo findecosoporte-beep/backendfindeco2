@@ -16,6 +16,7 @@ from rest_framework.test import APITestCase
 from .models import (
     Cartera,
     Cliente,
+    ConfiguracionFacturacion,
     HojaCobroImpresion,
     Pago,
     Prestamo,
@@ -24,6 +25,7 @@ from .models import (
     UsuarioCartera,
     Zona,
 )
+from .core.facturacion_sar import formatear_numero_factura_sar
 from .estado_cuenta_export import recolectar_datos_estado_cuenta
 from .serializers import PrestamoSerializer
 
@@ -498,7 +500,7 @@ class RolePermissionIntegrationTestCase(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_pago_excedente_abona_resto_a_capital(self):
-        """Si el cliente paga de más, se cierra la cuota actual y el resto va a capital."""
+        """Si el cliente paga de más, el excedente avanza a la siguiente cuota (capital)."""
         self._auth_with_role(role='supervisor', email='excedente.cuota@test.com')
         cliente = Cliente.objects.create(nombre='Cliente Excedente', dni='0801-2000-00016')
         cartera = Cartera.objects.create(nombre='Cartera Excedente', dia_cobro='lunes')
@@ -538,7 +540,8 @@ class RolePermissionIntegrationTestCase(APITestCase):
         self.assertIn('distribucion', response.data)
         self.assertEqual(len(response.data['distribucion']), 2)
         self.assertEqual(response.data['distribucion'][0]['cuota'], 1)
-        self.assertTrue(response.data['distribucion'][1].get('abono_capital'))
+        self.assertEqual(response.data['distribucion'][1]['cuota'], 2)
+        self.assertTrue(response.data['distribucion'][1].get('parcial'))
 
         pagos = Pago.objects.filter(id_prestamo=prestamo).order_by('id_pago')
         self.assertEqual(pagos.count(), 1)
@@ -547,7 +550,8 @@ class RolePermissionIntegrationTestCase(APITestCase):
         self.assertEqual(Decimal(pago.monto_recibido_cliente), Decimal('2000.00'))
         self.assertEqual(len(pago.detalle_distribucion or []), 2)
         self.assertEqual(pago.detalle_distribucion[0].get('cuota'), 1)
-        self.assertTrue(pago.detalle_distribucion[1].get('abono_capital'))
+        self.assertEqual(pago.detalle_distribucion[1].get('cuota'), 2)
+        self.assertTrue(pago.detalle_distribucion[1].get('parcial'))
 
         pdf_pago = self.client.get(f'/api/v1/pagos/{pago.id_pago}/factura-pdf/')
         self.assertEqual(pdf_pago.status_code, status.HTTP_200_OK)
@@ -1473,6 +1477,67 @@ class ProductionSettingsTestCase(SimpleTestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
         self.assertIn('False', result.stdout)
+
+
+class ConfiguracionFacturacionTestCase(APITestCase):
+    """API y numeracion SAR de facturacion."""
+
+    def setUp(self):
+        self.user_model = get_user_model()
+
+    def _auth_with_role(self, role: str, email: str):
+        django_user = self.user_model.objects.create_user(
+            username=email,
+            email=email,
+            password='Secreta123!',
+        )
+        Usuario.objects.create(
+            nombre=f'Usuario {role}',
+            rol=role,
+            correo=email,
+            clave='hash-falso',
+        )
+        self.client.force_authenticate(user=django_user)
+
+    def test_get_configuracion_crea_singleton(self):
+        self._auth_with_role(role='cobrador', email='cobrador.config@test.com')
+        response = self.client.get('/api/v1/configuracion/facturacion/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['id'], 1)
+        self.assertTrue(ConfiguracionFacturacion.objects.filter(pk=1).exists())
+
+    def test_cobrador_no_puede_editar_configuracion(self):
+        self._auth_with_role(role='cobrador', email='cobrador.config2@test.com')
+        response = self.client.patch(
+            '/api/v1/configuracion/facturacion/',
+            data={'razon_social': 'Findeco SA'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_supervisor_actualiza_configuracion_sar(self):
+        self._auth_with_role(role='supervisor', email='super.config@test.com')
+        payload = {
+            'razon_social': 'Findeco Honduras SA',
+            'rtn': '08019001234567',
+            'cai': 'ABC123-456789-DEF',
+            'fecha_limite_emision': (date.today() + timedelta(days=365)).isoformat(),
+            'establecimiento': '001',
+            'punto_emision': '002',
+            'tipo_documento': '01',
+            'correlativo_desde': 1,
+            'correlativo_hasta': 5000,
+            'correlativo_actual': 10,
+            'usar_numeracion_sar': True,
+        }
+        response = self.client.patch('/api/v1/configuracion/facturacion/', data=payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['razon_social'], payload['razon_social'])
+        self.assertIn('001-002-01', response.data['numero_ejemplo'])
+
+    def test_formatear_numero_factura_sar(self):
+        numero = formatear_numero_factura_sar('1', '2', '1', 42)
+        self.assertEqual(numero, '001-002-01-00000042')
 
 
 class OpenApiSettingsTestCase(APITestCase):

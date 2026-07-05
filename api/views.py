@@ -48,6 +48,7 @@ from .core.fechas_display import (
     formato_hora_hn,
 )
 from .core.findeco_brand import dibujar_logo_ticket
+from .core.facturacion_sar import obtener_configuracion_facturacion, texto_rango_autorizado
 from .core.money import round_money
 from .core.prestamo_calc import (
     annual_rate_from_nominal,
@@ -78,6 +79,7 @@ from .models import (
     Cartera,
     Cliente,
     ClienteDocumento,
+    ConfiguracionFacturacion,
     ContratoPrestamo,
     HistorialPrestamo,
     HojaCobroImpresion,
@@ -90,12 +92,19 @@ from .models import (
 )
 from .permissions import RoleBasedAccessPermission
 from .pagination import ClienteListPagination, ReporteIntegracionPagination
-from .role_policy import WRITE_ADMIN, WRITE_ANULAR_PAGOS, WRITE_COBROS, WRITE_CONTRATOS, WRITE_DOCUMENTOS 
+from .role_policy import (
+    WRITE_ADMIN,
+    WRITE_ANULAR_PAGOS,
+    WRITE_COBROS,
+    WRITE_CONFIGURACION,
+    WRITE_CONTRATOS,
+    WRITE_DOCUMENTOS,
+)
 from .serializers import (
-    
     CarteraSerializer,
     ClienteSerializer,
     ClienteDocumentoSerializer,
+    ConfiguracionFacturacionSerializer,
     ContratoPrestamoSerializer,
     HistorialPrestamoSerializer,
     PagoSerializer,
@@ -175,6 +184,9 @@ def _resolver_pago_factura(pago: Pago) -> Pago:
 def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
     """Genera un PDF de factura con estilo ticket (58mm u 80mm)."""
     buffer = io.BytesIO()
+    config = obtener_configuracion_facturacion()
+    if ticket_format not in ('58', '80'):
+        ticket_format = config.formato_ticket or '58'
     is_80mm = ticket_format == '80'
     ticket_w = (80 if is_80mm else 58) * mm
     ticket_h = 210 * mm
@@ -239,10 +251,45 @@ def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
         14 if is_80mm else 11,
     )
 
+    emisor_size = 8.5 if is_80mm else 7.4
+    if config.razon_social.strip():
+        center_text(config.razon_social.strip(), emisor_size, True, 4.2)
+    if config.nombre_comercial.strip() and config.nombre_comercial.strip() != config.razon_social.strip():
+        center_text(config.nombre_comercial.strip(), emisor_size, False, 4.0)
+    if config.rtn.strip():
+        center_text(f'RTN: {config.rtn.strip()}', emisor_size, False, 4.0)
+    if config.direccion.strip():
+        center_text(config.direccion.strip(), emisor_size - 0.6, False, 3.8)
+    if config.ciudad.strip():
+        center_text(config.ciudad.strip(), emisor_size - 0.6, False, 3.8)
+    if config.telefono.strip():
+        center_text(f'Tel: {config.telefono.strip()}', emisor_size - 0.6, False, 3.8)
+
     title_size = 10 if is_80mm else 9
     folio_size = 9 if is_80mm else 8
     center_text('FACTURA ELECTRONICA', title_size, True)
-    center_text(f'F{pago.id_pago:03d}-{pago.id_prestamo.id_prestamo:08d}', folio_size, False, 4.8)
+    folio = pago.numero_factura or f'F{pago.id_pago:03d}-{pago.id_prestamo.id_prestamo:08d}'
+    center_text(folio, folio_size, True, 4.8)
+    if config.cai.strip():
+        cai_size = 7.8 if is_80mm else 7.0
+        center_text(f'CAI: {config.cai.strip()}', cai_size, False, 3.8)
+        if config.fecha_limite_emision:
+            center_text(
+                f'Fecha limite emision: {formato_fecha_hn(config.fecha_limite_emision)}',
+                cai_size,
+                False,
+                3.8,
+            )
+        rango_txt = texto_rango_autorizado(config)
+        if len(rango_txt) > 42 and not is_80mm:
+            mitad = len(rango_txt) // 2
+            corte = rango_txt.rfind(' ', 0, mitad + 10)
+            if corte <= 0:
+                corte = mitad
+            center_text(rango_txt[:corte].strip(), cai_size - 0.4, False, 3.6)
+            center_text(rango_txt[corte:].strip(), cai_size - 0.4, False, 3.6)
+        else:
+            center_text(rango_txt, cai_size - 0.4, False, 3.8)
     if pago.anulado:
         pdf.setFillColor(colors.HexColor('#CC0000'))
         center_text('*** ANULADA ***', title_size, True, 5.2)
@@ -253,7 +300,7 @@ def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
     pdf.setFont('Helvetica', body_size)
     pdf.drawString(producto_x, y, f'Senor(es): {cliente.nombre}')
     y -= 5 * mm
-    pdf.drawString(producto_x, y, f'RUC/DNI: {cliente.dni}')
+    pdf.drawString(producto_x, y, f'RTN/DNI: {cliente.dni}')
     y -= 5 * mm
     momento_cobro = cobrado_en_efectivo(pago)
     pdf.drawString(producto_x, y, f'Fecha cobro: {formato_fecha_hn(pago.fecha_pago)}')
@@ -291,30 +338,59 @@ def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
     lineas_detalle = [
         item for item in detalle_distribucion if isinstance(item, dict)
     ]
-    if not lineas_detalle:
+    cuota_ref = extract_cuota_numero_from_documento(pago.documento)
+
+    if liquida_prestamo:
+        plan_cuotas = list(
+            PrestamoCuota.objects.filter(id_prestamo=pago.id_prestamo).order_by('numero_cuota'),
+        )
+        for cuota_row in plan_cuotas:
+            monto_cuota = round_money(monto_cuota_programada(cuota_row))
+            dibujar_linea_detalle(f'Cuota #{cuota_row.numero_cuota}', monto_cuota)
+        for item in lineas_detalle:
+            if item.get('abono_capital'):
+                total_abono = round_money(Decimal(str(item.get('total', '0'))))
+                if total_abono > 0:
+                    dibujar_linea_detalle('Abono a capital', total_abono)
+    elif not lineas_detalle:
         producto_label = f'COBRO {pago.documento or "PAGO"}'
         dibujar_linea_detalle(producto_label, total_venta)
     else:
-        for item in lineas_detalle:
-            if item.get('abono_capital'):
-                producto_label = 'Abono a capital'
-            else:
-                cuota_n = item.get('cuota', '')
-                es_parcial = bool(item.get('parcial'))
-                if es_parcial:
-                    producto_label = 'Abono parcial'
-                else:
-                    producto_label = f'Cuota #{cuota_n}'
-            total_cuota = round_money(Decimal(str(item.get('total', '0'))))
-            dibujar_linea_detalle(producto_label, total_cuota)
+        if cuota_ref is not None:
+            producto_label = f'Pago cuota #{cuota_ref}'
+        else:
+            producto_label = f'Pago {pago.documento or "préstamo"}'
+        dibujar_linea_detalle(producto_label, total_venta)
     line()
 
     # Totales.
     pdf.setFont('Helvetica', detail_size)
+    base_gravada = total_venta
+    isv_monto = Decimal('0.00')
+    if config.aplicar_isv and config.porcentaje_isv > 0:
+        pct = Decimal(config.porcentaje_isv) / Decimal('100')
+        base_gravada = round_money(total_venta / (Decimal('1') + pct))
+        isv_monto = round_money(total_venta - base_gravada)
+
     if efectivo_recibido is not None:
         totals: list[tuple[str, Decimal]] = [
             ('EFECTIVO RECIBIDO', efectivo_recibido),
         ]
+    elif config.aplicar_isv and isv_monto > 0:
+        totals = [
+            ('OP. GRAVADAS', base_gravada),
+            ('SUBTOTAL', base_gravada),
+            (f'ISV ({config.porcentaje_isv}%)', isv_monto),
+        ]
+    elif not config.aplicar_isv:
+        totals = [
+            ('SUBTOTAL', subtotal),
+        ]
+        if config.leyenda_exento.strip():
+            pdf.setFont('Helvetica', detail_size - 0.6)
+            pdf.drawString(producto_x, y, config.leyenda_exento.strip()[:48])
+            y -= 4.2 * mm
+            pdf.setFont('Helvetica', detail_size)
     else:
         totals = [
             ('OP. GRAVADAS', subtotal),
@@ -357,10 +433,12 @@ def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
     center_text(f'VENDEDOR(A): {pago.id_prestamo.asesor or "N/A"}', meta_size, True, 4.2)
     line()
     center_text('Representacion impresa de la factura electronica', 7.8 if is_80mm else 7, False, 3.8)
-    center_text('Gracias por su preferencia', 8.5 if is_80mm else 7.6, False, 4.6)
+    pie = (config.leyenda_pie or 'Gracias por su preferencia').strip()
+    center_text(pie, 8.5 if is_80mm else 7.6, False, 4.6)
 
+    qr_folio = pago.numero_factura or str(pago.id_pago)
     qr_payload = (
-        f"PAGO:{pago.id_pago}|PRESTAMO:{pago.id_prestamo.numero_prestamo}|"
+        f"FACTURA:{qr_folio}|PAGO:{pago.id_pago}|PRESTAMO:{pago.id_prestamo.numero_prestamo}|"
         f"CLIENTE:{cliente.dni}|FECHA:{pago.fecha_pago.isoformat()}|"
         f"HORA:{formato_hora_hn(momento_cobro)}|TOTAL:{total_venta}"
     )
@@ -1636,3 +1714,31 @@ class HistorialPrestamoViewSet(viewsets.ReadOnlyModelViewSet):
     search_fields = ['numero_prestamo', 'id_cliente__nombre', 'producto']
     filterset_fields = ['id_cliente', 'numero_prestamo']
     ordering_fields = ['id_historial', 'monto', 'saldo']
+
+
+class ConfiguracionFacturacionView(APIView):
+    """Singleton de configuracion fiscal SAR para facturas de cobro."""
+
+    permission_classes = AUTH_PERMISSION_CLASSES
+    required_write_roles = WRITE_CONFIGURACION
+
+    def get(self, request):
+        config = obtener_configuracion_facturacion()
+        return Response(ConfiguracionFacturacionSerializer(config).data)
+
+    def put(self, request):
+        return self._guardar(request, partial=False)
+
+    def patch(self, request):
+        return self._guardar(request, partial=True)
+
+    def _guardar(self, request, partial: bool):
+        config = obtener_configuracion_facturacion()
+        serializer = ConfiguracionFacturacionSerializer(
+            config,
+            data=request.data,
+            partial=partial,
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)

@@ -16,12 +16,17 @@ from .core.distribucion_pago import (
     abonado_por_cuota_desde_pagos,
     cuota_esta_pagada,
     cuotas_cubiertas_por_pago_acumulado,
-    distribuir_cobro_con_excedente_a_capital,
+    distribuir_monto_en_cuotas,
     pendiente_cuota,
     saldo_pendiente_tras_abono,
     total_abonado_prestamo,
 )
-from .core.fechas import calculate_fecha_cuota, calculate_fecha_vencimiento
+from .core.facturacion_sar import (
+    ErrorFacturacionSAR,
+    asignar_numero_factura_sar,
+    formatear_numero_factura_sar,
+    texto_rango_autorizado,
+)
 from .core.money import round_money
 from .core.prestamo_calc import (
     periodos_desde_plazo,
@@ -33,6 +38,7 @@ from .models import (
     Cartera,
     Cliente,
     ClienteDocumento,
+    ConfiguracionFacturacion,
     ContratoPrestamo,
     HistorialPrestamo,
     Pago,
@@ -773,7 +779,7 @@ class PagoSerializer(serializers.ModelSerializer):
                 debe_distribuir = True
 
         if debe_distribuir:
-            lineas = distribuir_cobro_con_excedente_a_capital(
+            lineas = distribuir_monto_en_cuotas(
                 plan_rows,
                 cuota_numero,
                 monto_distribuir,
@@ -825,6 +831,7 @@ class PagoSerializer(serializers.ModelSerializer):
                     monto_recibido_cliente=monto_recibido_cliente,
                     detalle_distribucion=detalle_factura,
                 )
+                _asignar_factura_sar_al_pago(pago_unico)
                 self._sync_prestamo_state(prestamo, pago_unico)
                 return pago_unico
 
@@ -844,6 +851,7 @@ class PagoSerializer(serializers.ModelSerializer):
         validated_data['cobrado_en'] = cobrado_en
 
         pago = super().create(validated_data)
+        _asignar_factura_sar_al_pago(pago)
         self.distribucion_resumen = None
         self._sync_prestamo_state(pago.id_prestamo, pago)
         return pago
@@ -1010,4 +1018,87 @@ class ContratoPrestamoSerializer(serializers.ModelSerializer):
 
         return value
 
+
+class ConfiguracionFacturacionSerializer(serializers.ModelSerializer):
+    """Configuracion fiscal SAR (singleton pk=1)."""
+
+    rango_autorizado_texto = serializers.SerializerMethodField(read_only=True)
+    numero_ejemplo = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = ConfiguracionFacturacion
+        fields = (
+            'id',
+            'razon_social',
+            'nombre_comercial',
+            'rtn',
+            'direccion',
+            'ciudad',
+            'telefono',
+            'correo',
+            'cai',
+            'fecha_limite_emision',
+            'establecimiento',
+            'punto_emision',
+            'tipo_documento',
+            'correlativo_desde',
+            'correlativo_hasta',
+            'correlativo_actual',
+            'usar_numeracion_sar',
+            'formato_ticket',
+            'aplicar_isv',
+            'porcentaje_isv',
+            'leyenda_exento',
+            'leyenda_pie',
+            'actualizado_en',
+            'rango_autorizado_texto',
+            'numero_ejemplo',
+        )
+        read_only_fields = ('id', 'actualizado_en', 'rango_autorizado_texto', 'numero_ejemplo')
+
+    def get_rango_autorizado_texto(self, obj: ConfiguracionFacturacion) -> str:
+        return texto_rango_autorizado(obj)
+
+    def get_numero_ejemplo(self, obj: ConfiguracionFacturacion) -> str:
+        return formatear_numero_factura_sar(
+            obj.establecimiento,
+            obj.punto_emision,
+            obj.tipo_documento,
+            obj.correlativo_actual,
+        )
+
+    def validate(self, attrs):
+        desde = attrs.get('correlativo_desde', getattr(self.instance, 'correlativo_desde', 1))
+        hasta = attrs.get('correlativo_hasta', getattr(self.instance, 'correlativo_hasta', 1))
+        actual = attrs.get('correlativo_actual', getattr(self.instance, 'correlativo_actual', 1))
+        if hasta < desde:
+            raise serializers.ValidationError(
+                {'correlativo_hasta': 'El correlativo final debe ser mayor o igual al inicial.'},
+            )
+        if not (desde <= actual <= hasta):
+            raise serializers.ValidationError(
+                {'correlativo_actual': 'El correlativo actual debe estar dentro del rango autorizado.'},
+            )
+        for field_name in ('establecimiento', 'punto_emision'):
+            value = str(attrs.get(field_name, getattr(self.instance, field_name, '001'))).strip()
+            if not value.isdigit() or len(value) > 3:
+                raise serializers.ValidationError(
+                    {field_name: 'Use hasta 3 digitos numericos (ej. 001).'},
+                )
+        tipo = str(attrs.get('tipo_documento', getattr(self.instance, 'tipo_documento', '01'))).strip()
+        if not tipo.isdigit() or len(tipo) > 2:
+            raise serializers.ValidationError(
+                {'tipo_documento': 'Use hasta 2 digitos numericos (01 = factura).'},
+            )
+        pct = attrs.get('porcentaje_isv', getattr(self.instance, 'porcentaje_isv', Decimal('15')))
+        if pct is not None and pct < 0:
+            raise serializers.ValidationError({'porcentaje_isv': 'El porcentaje de ISV no puede ser negativo.'})
+        return attrs
+
+
+def _asignar_factura_sar_al_pago(pago: Pago) -> None:
+    try:
+        asignar_numero_factura_sar(pago)
+    except ErrorFacturacionSAR as exc:
+        raise serializers.ValidationError({'detail': str(exc)}) from exc
 

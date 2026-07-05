@@ -348,6 +348,13 @@ class Pago(models.Model):
         related_name='pagos_anulados',
     )
     motivo_anulacion = models.CharField(max_length=500, null=True, blank=True)
+    numero_factura = models.CharField(
+        max_length=30,
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text='Numero correlativo SAR (XXX-XXX-XX-XXXXXXXX) asignado al cobro.',
+    )
 
     class Meta:
         """Mapeo ORM: tabla `pagos` y orden por fecha e id."""
@@ -467,6 +474,81 @@ class ContratoPrestamo(models.Model):
 
     def __str__(self) -> str:
         return str(self.titulo or f'Contrato #{self.id_contrato}')
+
+
+class ConfiguracionFacturacion(models.Model):
+    """Parametros fiscales de facturacion al estilo SAR (Honduras)."""
+
+    objects = models.Manager()
+
+    id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
+    razon_social = models.CharField(max_length=200, blank=True, default='')
+    nombre_comercial = models.CharField(max_length=200, blank=True, default='')
+    rtn = models.CharField(max_length=20, blank=True, default='', help_text='RTN del emisor')
+    direccion = models.CharField(max_length=300, blank=True, default='')
+    ciudad = models.CharField(max_length=100, blank=True, default='')
+    telefono = models.CharField(max_length=50, blank=True, default='')
+    correo = models.EmailField(blank=True, default='')
+    cai = models.CharField(
+        max_length=40,
+        blank=True,
+        default='',
+        help_text='Codigo de Autorizacion de Impresion (CAI) otorgado por SAR',
+    )
+    fecha_limite_emision = models.DateField(
+        null=True,
+        blank=True,
+        help_text='Fecha limite de emision autorizada para el CAI',
+    )
+    establecimiento = models.CharField(max_length=3, default='001')
+    punto_emision = models.CharField(max_length=3, default='001')
+    tipo_documento = models.CharField(
+        max_length=2,
+        default='01',
+        help_text='01 = Factura, 06 = Nota de credito, etc.',
+    )
+    correlativo_desde = models.PositiveIntegerField(default=1)
+    correlativo_hasta = models.PositiveIntegerField(default=99999999)
+    correlativo_actual = models.PositiveIntegerField(
+        default=1,
+        help_text='Proximo correlativo a asignar en un cobro',
+    )
+    usar_numeracion_sar = models.BooleanField(
+        default=False,
+        help_text='Si esta activo, cada cobro recibe numero SAR y valida CAI/rango.',
+    )
+    formato_ticket = models.CharField(
+        max_length=2,
+        choices=(('58', '58 mm'), ('80', '80 mm')),
+        default='58',
+    )
+    aplicar_isv = models.BooleanField(default=False)
+    porcentaje_isv = models.DecimalField(max_digits=5, decimal_places=2, default=15)
+    leyenda_exento = models.CharField(
+        max_length=200,
+        blank=True,
+        default='Operacion exenta / no sujeta a ISV',
+    )
+    leyenda_pie = models.CharField(
+        max_length=300,
+        blank=True,
+        default='Gracias por su preferencia',
+    )
+    actualizado_en = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        """Un solo registro de configuracion (pk=1)."""
+
+        db_table = 'configuracion_facturacion'
+        verbose_name = 'Configuracion de facturacion'
+        verbose_name_plural = 'Configuracion de facturacion'
+
+    def save(self, *args, **kwargs):
+        self.pk = 1
+        super().save(*args, **kwargs)
+
+    def __str__(self) -> str:
+        return self.razon_social or 'Configuracion de facturacion'
 
 
 class HojaCobroImpresion(models.Model):
