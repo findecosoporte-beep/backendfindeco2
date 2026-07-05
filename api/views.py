@@ -50,6 +50,7 @@ from .core.fechas_display import (
 from .core.findeco_brand import dibujar_logo_ticket
 from .core.facturacion_sar import obtener_configuracion_facturacion, texto_rango_autorizado
 from .core.money import round_money
+from .core.reporte_saldos import saldos_reporte_integracion
 from .core.prestamo_calc import (
     annual_rate_from_nominal,
     frecuencia_anual,
