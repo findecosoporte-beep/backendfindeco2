@@ -33,7 +33,7 @@ from .clientes_excel import (
     generar_plantilla_clientes_xlsx,
     importar_clientes_xlsx,
 )
-from .estado_cuenta_export import exportar_estado_cuenta_pdf, recolectar_datos_estado_cuenta
+from .facturas_contabilidad import recolectar_facturas_contabilidad
 from .historial_pagos_export import (
     exportar_historial_pagos_pdf,
     exportar_historial_pagos_xlsx,
@@ -1835,4 +1835,48 @@ class ReporteSarTrimestralView(APIView):
             filename = nombre_archivo_reporte_sar(trimestre, anio)
             response['Content-Disposition'] = f'inline; filename="{filename}"'
             return response
+        return Response(datos)
+
+
+class FacturasContabilidadView(APIView):
+    """Facturas SAR emitidas en un periodo, para revision contable."""
+
+    permission_classes = (IsAuthenticated,)
+
+    def get(self, request):
+        actor = usuario_operativo_desde_request(request)
+        if actor is None or actor.rol not in WRITE_CONFIGURACION:
+            return Response(
+                {'detail': 'Solo administrador o supervisor pueden consultar facturas de contabilidad.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        modo = request.query_params.get('modo', 'mes')
+        fecha_str = request.query_params.get('fecha')
+        mes_str = request.query_params.get('mes')
+        anio_str = request.query_params.get('anio')
+        id_cartera_raw = request.query_params.get('id_cartera')
+        incluir_anuladas = (request.query_params.get('incluir_anuladas') or '').strip().lower() in (
+            '1',
+            'true',
+            'si',
+            'sí',
+        )
+
+        inicio, fin = _rango_periodo_historial_pagos(modo, fecha_str, mes_str, anio_str)
+
+        id_cartera = None
+        if id_cartera_raw:
+            try:
+                id_cartera = int(id_cartera_raw)
+            except (TypeError, ValueError) as exc:
+                raise ValidationError({'id_cartera': 'Cartera inválida.'}) from exc
+
+        datos = recolectar_facturas_contabilidad(
+            inicio,
+            fin,
+            id_cartera=id_cartera,
+            incluir_anuladas=incluir_anuladas,
+        )
+        datos['modo'] = (modo or 'mes').strip().lower()
         return Response(datos)

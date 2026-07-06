@@ -10,6 +10,7 @@ from .views import (
     ConfiguracionFacturacionView,
     ContratoPrestamoViewSet,
     DashboardResumenView,
+    FacturasContabilidadView,
     HealthView,
     HistorialPrestamoViewSet,
     MeView,
@@ -50,6 +51,11 @@ urlpatterns = [
         'reportes/sar/',
         ReporteSarTrimestralView.as_view(),
         name='reportes-sar',
+    ),
+    path(
+        'reportes/facturas-contabilidad/',
+        FacturasContabilidadView.as_view(),
+        name='reportes-facturas-contabilidad',
     ),
     path('', include(router.urls)),
 ]
