@@ -1230,7 +1230,14 @@ def _fila_reporte_integracion(
 class PrestamoViewSet(viewsets.ModelViewSet):
     """CRUD de prestamos con filtros de negocio."""
 
-    queryset = Prestamo.objects.select_related('id_cliente', 'id_usuario', 'id_zona', 'id_cartera').all()
+    queryset = Prestamo.objects.select_related(
+        'id_cliente',
+        'id_usuario',
+        'id_zona',
+        'id_cartera',
+        'creado_por',
+        'modificado_por',
+    ).all()
     serializer_class = PrestamoSerializer
     permission_classes = AUTH_PERMISSION_CLASSES
     required_write_roles = WRITE_ADMIN
@@ -1249,7 +1256,14 @@ class PrestamoViewSet(viewsets.ModelViewSet):
     ordering_fields = ['id_prestamo', 'monto', 'fecha_vencimiento', 'dias_mora']
 
     def get_queryset(self):
-        qs = Prestamo.objects.select_related('id_cliente', 'id_usuario', 'id_zona', 'id_cartera').all()
+        qs = Prestamo.objects.select_related(
+            'id_cliente',
+            'id_usuario',
+            'id_zona',
+            'id_cartera',
+            'creado_por',
+            'modificado_por',
+        ).all()
         return filtrar_prestamos_por_cobrador(qs, self.request)
 
     def perform_destroy(self, instance):

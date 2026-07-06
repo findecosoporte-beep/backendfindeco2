@@ -9,7 +9,7 @@ from django.db.models import Max
 from django.utils import timezone
 from rest_framework import serializers
 
-from .cobrador_scope import validar_cobro_por_cartera
+from .cobrador_scope import validar_cobro_por_cartera, usuario_operativo_desde_request
 from .core.documento_honduras import normalizar_dni_hn, normalizar_rtn_hn_opcional
 from .core.telefono_honduras import normalizar_telefono_hn_opcional
 from .core.cuotas import extract_cuota_numero_from_documento
@@ -492,13 +492,33 @@ class PrestamoSerializer(serializers.ModelSerializer):
 
     zona = ZonaSerializer(source='id_zona', read_only=True)
     cartera = CarteraSerializer(source='id_cartera', read_only=True)
+    creado_por_nombre = serializers.CharField(read_only=True)
+    modificado_por_nombre = serializers.CharField(read_only=True)
 
     class Meta:
         model = Prestamo
         fields = '__all__'
         extra_kwargs = {
             'fecha_vencimiento': {'required': False},
+            'creado_en': {'read_only': True},
+            'creado_por': {'read_only': True},
+            'modificado_por': {'read_only': True},
+            'actualizado_en': {'read_only': True},
         }
+
+    def to_representation(self, instance: Prestamo) -> dict:
+        data = super().to_representation(instance)
+        data['creado_por_nombre'] = instance.creado_por.nombre if instance.creado_por_id else None
+        data['modificado_por_nombre'] = (
+            instance.modificado_por.nombre if instance.modificado_por_id else None
+        )
+        return data
+
+    def _actor_desde_contexto(self) -> Usuario | None:
+        request = self.context.get('request')
+        if request is None:
+            return None
+        return usuario_operativo_desde_request(request)
 
     def _aplicar_cartera_en_attrs(self, attrs: dict) -> dict:
         cartera = attrs.get('id_cartera')
@@ -577,6 +597,10 @@ class PrestamoSerializer(serializers.ModelSerializer):
 
     @transaction.atomic
     def create(self, validated_data):
+        actor = self._actor_desde_contexto()
+        if actor is not None:
+            validated_data['creado_por'] = actor
+            validated_data['modificado_por'] = actor
         cliente = validated_data.get('id_cliente')
         if cliente is not None:
             validated_data['ciclos'] = _ciclos_para_renovacion(cliente)
@@ -640,6 +664,13 @@ class PrestamoSerializer(serializers.ModelSerializer):
 
         PrestamoCuota.objects.bulk_create(cuotas)
         return prestamo
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        actor = self._actor_desde_contexto()
+        if actor is not None:
+            validated_data['modificado_por'] = actor
+        return super().update(instance, validated_data)
 
 
 class SimulacionPrestamoSerializer(serializers.Serializer):

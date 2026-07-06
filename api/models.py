@@ -246,6 +246,25 @@ class Prestamo(models.Model):
     fecha_entrega = models.DateField()
     fecha_vencimiento = models.DateField()
     creado_en = models.DateTimeField(auto_now_add=True, null=True, blank=True)
+    creado_por = models.ForeignKey(
+        Usuario,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        db_column='creado_por',
+        related_name='prestamos_creados',
+        help_text='Usuario operativo que registró el préstamo en el sistema.',
+    )
+    modificado_por = models.ForeignKey(
+        Usuario,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        db_column='modificado_por',
+        related_name='prestamos_modificados',
+        help_text='Último usuario operativo que modificó el préstamo.',
+    )
+    actualizado_en = models.DateTimeField(auto_now=True, null=True, blank=True)
 
     class Meta:
         """Mapeo ORM: tabla `prestamos` y orden descendente por id."""

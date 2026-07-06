@@ -1217,6 +1217,9 @@ class RolePermissionIntegrationTestCase(APITestCase):
         }
         response = self.client.post('/api/v1/prestamos/', data=payload, format='json')
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['creado_por'], usuario_operativo.id_usuario)
+        self.assertEqual(response.data['creado_por_nombre'], usuario_operativo.nombre)
+        self.assertIsNotNone(response.data['creado_en'])
 
         prestamo = Prestamo.objects.get(numero_prestamo='PRE-AUTO-001')
         cuotas = PrestamoCuota.objects.filter(id_prestamo=prestamo).order_by('numero_cuota')
