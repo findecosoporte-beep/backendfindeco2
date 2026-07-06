@@ -159,6 +159,26 @@ class RolePermissionIntegrationTestCase(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data['nombre'], self.cliente_payload['nombre'])
+        self.assertEqual(response.data['dni'], '0801-2000-00002')
+
+    def test_cliente_rechaza_dni_invalido(self):
+        self._auth_with_role(role='supervisor', email='supervisor.dni@test.com')
+        payload = {**self.cliente_payload, 'dni': '0801-2000'}
+        response = self.client.post('/api/v1/clientes/', data=payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_cliente_normaliza_dni_sin_guiones(self):
+        self._auth_with_role(role='supervisor', email='supervisor.dni.fmt@test.com')
+        payload = {**self.cliente_payload, 'dni': '0801200000003'}
+        response = self.client.post('/api/v1/clientes/', data=payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['dni'], '0801-2000-00003')
+
+    def test_cliente_rechaza_rtn_invalido(self):
+        self._auth_with_role(role='supervisor', email='supervisor.rtn@test.com')
+        payload = {**self.cliente_payload, 'rtn': '08019001'}
+        response = self.client.post('/api/v1/clientes/', data=payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_asesor_no_puede_crear_cartera(self):
         self._auth_with_role(role='asesor', email='asesor.cartera@test.com')
@@ -1715,6 +1735,22 @@ class ReporteSarTrimestralTestCase(APITestCase):
         self.assertEqual(response['Content-Type'], 'application/pdf')
         self.assertTrue(response.content.startswith(b'%PDF'))
         self.assertIn('reporte-sar-T2-2026.pdf', response['Content-Disposition'])
+
+
+class DocumentoHondurasCoreTestCase(SimpleTestCase):
+    """Normalización de DNI y RTN de Honduras."""
+
+    def test_normalizar_dni_formatea(self):
+        from api.core.documento_honduras import normalizar_dni_hn
+
+        self.assertEqual(normalizar_dni_hn('0801199012345'), '0801-1990-12345')
+        self.assertEqual(normalizar_dni_hn('0801-1990-12345'), '0801-1990-12345')
+
+    def test_normalizar_rtn_solo_digitos(self):
+        from api.core.documento_honduras import normalizar_rtn_hn_opcional
+
+        self.assertEqual(normalizar_rtn_hn_opcional('08019001234567'), '08019001234567')
+        self.assertIsNone(normalizar_rtn_hn_opcional(''))
 
 
 class OpenApiSettingsTestCase(APITestCase):

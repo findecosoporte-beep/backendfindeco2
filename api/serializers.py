@@ -10,6 +10,8 @@ from django.utils import timezone
 from rest_framework import serializers
 
 from .cobrador_scope import validar_cobro_por_cartera
+from .core.documento_honduras import normalizar_dni_hn, normalizar_rtn_hn_opcional
+from .core.telefono_honduras import normalizar_telefono_hn_opcional
 from .core.cuotas import extract_cuota_numero_from_documento
 from .core.distribucion_pago import (
     CUOTA_PAGADA_TOLERANCIA,
@@ -131,6 +133,36 @@ class ClienteSerializer(serializers.ModelSerializer):
     class Meta:
         model = Cliente
         fields = '__all__'
+
+    def validate_dni(self, value: str) -> str:
+        try:
+            return normalizar_dni_hn(value)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc)) from exc
+
+    def validate_rtn(self, value: str | None) -> str | None:
+        if value in (None, ''):
+            return None
+        try:
+            return normalizar_rtn_hn_opcional(value)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc)) from exc
+
+    def validate_telefono(self, value: str | None) -> str | None:
+        if value in (None, ''):
+            return None
+        try:
+            return normalizar_telefono_hn_opcional(value)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc)) from exc
+
+    def validate_referencia_telefono(self, value: str | None) -> str | None:
+        if value in (None, ''):
+            return None
+        try:
+            return normalizar_telefono_hn_opcional(value)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc)) from exc
 
     def get_total_prestamos(self, obj: Cliente) -> int:
         count = getattr(obj, 'prestamos_count', None)
@@ -1063,6 +1095,14 @@ class ConfiguracionFacturacionSerializer(serializers.ModelSerializer):
             'numero_ejemplo',
         )
         read_only_fields = ('id', 'actualizado_en', 'rango_autorizado_texto', 'numero_ejemplo')
+
+    def validate_rtn(self, value: str) -> str:
+        if not (value or '').strip():
+            return ''
+        try:
+            return normalizar_rtn_hn_opcional(value) or ''
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc)) from exc
 
     def get_rango_autorizado_texto(self, obj: ConfiguracionFacturacion) -> str:
         return texto_rango_autorizado(obj)
