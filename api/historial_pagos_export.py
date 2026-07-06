@@ -38,6 +38,9 @@ COLUMNAS_EXCEL = (
     ('fecha_programada', 'Fecha programada'),
     ('fecha_pago', 'Fecha canceló'),
     ('hora_pago', 'Hora'),
+    ('registrado_por_nombre', 'Nombre usuario'),
+    ('registrado_por', 'ID usuario'),
+    ('registrado_en', 'Fecha registro'),
     ('nombre_cliente', 'Cliente'),
     ('dni_cliente', 'DNI'),
     ('numero_prestamo', 'Préstamo'),
@@ -106,16 +109,28 @@ def exportar_historial_pagos_xlsx(datos: dict) -> bytes:
         cell.font = header_font
 
     for fila in datos.get('filas', []):
-        ws.append([
-            fila.get(key, '') or ('—' if key == 'fecha_programada' else '')
-            for key, _ in COLUMNAS_EXCEL
-        ])
+        row = []
+        for key, _ in COLUMNAS_EXCEL:
+            val = fila.get(key, '')
+            if val in (None, ''):
+                if key in ('fecha_programada', 'registrado_en', 'registrado_por_nombre'):
+                    val = '—'
+                elif key == 'registrado_por':
+                    val = '—'
+                else:
+                    val = ''
+            row.append(val)
+        ws.append(row)
 
     resumen = datos.get('resumen', {})
     ws.append([])
     ws.append(
         [
             'Totales',
+            '',
+            '',
+            '',
+            '',
             '',
             '',
             '',
@@ -196,6 +211,9 @@ def exportar_historial_pagos_pdf(datos: dict) -> bytes:
             'F. programada',
             'F. canceló',
             'Hora',
+            'Nombre usuario',
+            'ID usuario',
+            'Fecha registro',
             'Cliente',
             'DNI',
             'Préstamo',
@@ -212,6 +230,9 @@ def exportar_historial_pagos_pdf(datos: dict) -> bytes:
                 fila.get('fecha_programada') or '—',
                 fila.get('fecha_pago', ''),
                 fila.get('hora_pago', ''),
+                fila.get('registrado_por_nombre') or '—',
+                str(fila.get('registrado_por') or '—'),
+                fila.get('registrado_en') or '—',
                 fila.get('nombre_cliente', ''),
                 fila.get('dni_cliente', ''),
                 fila.get('numero_prestamo', ''),
@@ -233,6 +254,9 @@ def exportar_historial_pagos_pdf(datos: dict) -> bytes:
             '',
             '',
             '',
+            '',
+            '',
+            '',
             f"{resumen.get('registros', 0)} reg.",
             _money_pdf(resumen.get('total_capital', '0')),
             _money_pdf(resumen.get('total_interes', '0')),
@@ -241,17 +265,20 @@ def exportar_historial_pagos_pdf(datos: dict) -> bytes:
     )
 
     col_widths = [
-        20 * mm,
-        20 * mm,
-        16 * mm,
-        32 * mm,
-        22 * mm,
-        24 * mm,
-        24 * mm,
-        20 * mm,
-        20 * mm,
+        18 * mm,
+        18 * mm,
+        14 * mm,
+        26 * mm,
+        14 * mm,
+        26 * mm,
+        28 * mm,
         20 * mm,
         22 * mm,
+        22 * mm,
+        18 * mm,
+        18 * mm,
+        18 * mm,
+        20 * mm,
     ]
     table = Table(table_data, colWidths=col_widths, repeatRows=1)
     table.setStyle(
@@ -261,7 +288,7 @@ def exportar_historial_pagos_pdf(datos: dict) -> bytes:
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
                 ('FONTSIZE', (0, 0), (-1, -1), 7),
-                ('ALIGN', (6, 0), (-1, -1), 'RIGHT'),
+                ('ALIGN', (11, 0), (-1, -1), 'RIGHT'),
                 ('GRID', (0, 0), (-1, -1), 0.25, colors.grey),
                 ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#E8EEF4')),
                 ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),

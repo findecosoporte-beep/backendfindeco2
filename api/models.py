@@ -332,6 +332,15 @@ class Pago(models.Model):
         blank=True,
         help_text='Fecha y hora en que se registró el cobro (factura y auditoría).',
     )
+    registrado_por = models.ForeignKey(
+        'Usuario',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        db_column='registrado_por',
+        related_name='pagos_registrados',
+        help_text='Usuario operativo que registró el cobro (web o app móvil).',
+    )
     documento = models.CharField(max_length=50, null=True, blank=True)
     capital = models.DecimalField(max_digits=12, decimal_places=2)
     interes = models.DecimalField(max_digits=12, decimal_places=2)

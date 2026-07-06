@@ -421,6 +421,8 @@ class RolePermissionIntegrationTestCase(APITestCase):
         self.assertIsNotNone(response.data['cobrado_en'])
         pago = Pago.objects.get(pk=response.data['id_pago'])
         self.assertIsNotNone(pago.cobrado_en)
+        self.assertEqual(pago.registrado_por_id, usuario_operativo.id_usuario)
+        self.assertEqual(response.data['registrado_por'], usuario_operativo.id_usuario)
 
     def test_estado_cuenta_pdf_prestamo_retorna_pdf(self):
         self._auth_with_role(role='supervisor', email='pdf.estado@test.com')
@@ -827,6 +829,15 @@ class RolePermissionIntegrationTestCase(APITestCase):
         self.assertIn('generado_en', response.data)
         self.assertIn('hora_pago', response.data['filas'][0])
         self.assertIn('cobrado_en', response.data['filas'][0])
+        self.assertEqual(
+            response.data['filas'][0]['registrado_por'],
+            Usuario.objects.get(correo='hist.pagos@test.com').id_usuario,
+        )
+        self.assertIn('registrado_por_etiqueta', response.data['filas'][0])
+        self.assertEqual(
+            response.data['filas'][0]['registrado_por_nombre'],
+            Usuario.objects.get(correo='hist.pagos@test.com').nombre,
+        )
 
         vacio = self.client.get('/api/v1/pagos/historial-cobros/?modo=dia&fecha=2020-01-01')
         self.assertEqual(vacio.status_code, status.HTTP_200_OK)

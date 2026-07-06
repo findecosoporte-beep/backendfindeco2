@@ -705,10 +705,27 @@ class PagoSerializer(serializers.ModelSerializer):
     monto_total = serializers.SerializerMethodField(
         help_text='Suma capital + interes + mora del cobro.',
     )
+    registrado_por_nombre = serializers.CharField(read_only=True)
 
     class Meta:
         model = Pago
         fields = '__all__'
+        extra_kwargs = {
+            'registrado_por': {'read_only': True},
+        }
+
+    def to_representation(self, instance: Pago) -> dict:
+        data = super().to_representation(instance)
+        data['registrado_por_nombre'] = (
+            instance.registrado_por.nombre if instance.registrado_por_id else None
+        )
+        return data
+
+    def _actor_registro(self) -> Usuario | None:
+        request = self.context.get('request')
+        if request is None:
+            return None
+        return usuario_operativo_desde_request(request)
 
     def get_monto_total(self, obj: Pago) -> str:
         total = Decimal(obj.capital) + Decimal(obj.interes) + Decimal(obj.mora)
@@ -805,6 +822,7 @@ class PagoSerializer(serializers.ModelSerializer):
 
     @transaction.atomic
     def create(self, validated_data):
+        actor = self._actor_registro()
         monto_recibido = validated_data.pop('monto_recibido', None)
         monto_recibido_cliente = (
             round_money(Decimal(monto_recibido)) if monto_recibido is not None else None
@@ -894,6 +912,7 @@ class PagoSerializer(serializers.ModelSerializer):
                     id_prestamo=prestamo,
                     fecha_pago=fecha_pago,
                     cobrado_en=cobrado_en,
+                    registrado_por=actor,
                     documento=documento_principal,
                     capital=capital_total,
                     interes=interes_total,
@@ -920,6 +939,8 @@ class PagoSerializer(serializers.ModelSerializer):
             validated_data['monto_recibido_cliente'] = monto_recibido_cliente
 
         validated_data['cobrado_en'] = cobrado_en
+        if actor is not None:
+            validated_data['registrado_por'] = actor
 
         pago = super().create(validated_data)
         _asignar_factura_sar_al_pago(pago)

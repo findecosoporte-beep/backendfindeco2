@@ -1536,6 +1536,13 @@ def _rango_periodo_historial_pagos(
     raise ValidationError({'modo': 'Use modo=dia, modo=mes o modo=anio.'})
 
 
+def _etiqueta_usuario_auditoria(usuario_id: int | None, nombre: str | None) -> str:
+    if usuario_id is None:
+        return ''
+    etiqueta = (nombre or '').strip() or f'Usuario #{usuario_id}'
+    return f'{etiqueta} (ID {usuario_id})'
+
+
 def _datos_historial_pagos_cobros(request) -> dict:
     """Arma el historial de pagos por día, mes o año."""
     modo = request.query_params.get('modo', 'dia')
@@ -1553,6 +1560,7 @@ def _datos_historial_pagos_cobros(request) -> dict:
             'id_prestamo',
             'id_prestamo__id_cliente',
             'id_prestamo__id_cartera',
+            'registrado_por',
         )
         .order_by('fecha_pago', 'id_pago')
     )
@@ -1612,6 +1620,13 @@ def _datos_historial_pagos_cobros(request) -> dict:
                 'fecha_pago': pg.fecha_pago.isoformat(),
                 'hora_pago': formato_hora_hn(cobrado_en_efectivo(pg)),
                 'cobrado_en': pg.cobrado_en.isoformat() if pg.cobrado_en else None,
+                'registrado_en': formato_fecha_hora_hn(pg.cobrado_en) if pg.cobrado_en else '',
+                'registrado_por': pg.registrado_por_id,
+                'registrado_por_nombre': pg.registrado_por.nombre if pg.registrado_por_id else '',
+                'registrado_por_etiqueta': _etiqueta_usuario_auditoria(
+                    pg.registrado_por_id,
+                    pg.registrado_por.nombre if pg.registrado_por_id else None,
+                ),
                 'documento': pg.documento,
                 'capital': str(round_money(capital)),
                 'interes': str(round_money(interes)),
