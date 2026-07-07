@@ -49,6 +49,9 @@ class Cliente(models.Model):
 
         db_table = 'clientes'
         ordering = ['id_cliente']
+        indexes = [
+            models.Index(fields=['nombre'], name='idx_cliente_nombre'),
+        ]
 
     def __str__(self) -> str:
         return f'{self.id_cliente} - {self.nombre}'
@@ -84,6 +87,9 @@ class Usuario(models.Model):
 
         db_table = 'usuarios'
         ordering = ['id_usuario']
+        indexes = [
+            models.Index(fields=['rol'], name='idx_usuario_rol'),
+        ]
 
     def __str__(self) -> str:
         return f'{self.id_usuario} - {self.nombre}'
@@ -271,6 +277,11 @@ class Prestamo(models.Model):
 
         db_table = 'prestamos'
         ordering = ['-id_prestamo']
+        indexes = [
+            models.Index(fields=['id_cartera', 'estado'], name='idx_prestamo_cartera_estado'),
+            models.Index(fields=['id_cliente', 'estado'], name='idx_prestamo_cliente_estado'),
+            models.Index(fields=['fecha_entrega'], name='idx_prestamo_fecha_entrega'),
+        ]
 
     def __str__(self) -> str:
         return str(self.numero_prestamo or f'Prestamo #{self.id_prestamo}')
@@ -395,6 +406,13 @@ class Pago(models.Model):
 
         db_table = 'pagos'
         ordering = ['-fecha_pago', '-id_pago']
+        indexes = [
+            models.Index(fields=['anulado', 'fecha_pago'], name='idx_pago_anulado_fecha'),
+            models.Index(
+                fields=['id_prestamo', 'anulado', 'fecha_pago'],
+                name='idx_pago_prestamo_vigente',
+            ),
+        ]
 
     def __str__(self) -> str:
         return f'Pago #{self.id_pago}'
