@@ -138,7 +138,7 @@ def exportar_historial_pagos_xlsx(datos: dict) -> bytes:
     ws = wb.active
     ws.title = 'Historial pagos'
 
-    header_fill = PatternFill('solid', fgColor='1F4E79')
+    header_fill = PatternFill('solid', fgColor='000000')
     header_font = Font(bold=True, color='FFFFFF')
 
     ws.append(['FINDECO — Historial de pagos'])
@@ -301,14 +301,14 @@ def exportar_historial_pagos_pdf(datos: dict) -> bytes:
     table.setStyle(
         TableStyle(
             [
-                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1F4E79')),
+                ('BACKGROUND', (0, 0), (-1, 0), colors.black),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
                 ('FONTSIZE', (0, 0), (-1, 0), 7),
                 ('FONTSIZE', (0, 1), (-1, -1), 6.5),
                 ('ALIGN', (money_col, 0), (-1, -1), 'RIGHT'),
-                ('GRID', (0, 0), (-1, -1), 0.25, colors.grey),
-                ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#E8EEF4')),
+                ('GRID', (0, 0), (-1, -1), 0.25, colors.black),
+                ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#E5E5E5')),
                 ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
                 ('VALIGN', (0, 0), (-1, -1), 'TOP'),
                 ('LEFTPADDING', (0, 0), (-1, -1), 3),
