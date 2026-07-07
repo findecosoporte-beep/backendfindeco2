@@ -37,7 +37,6 @@ MESES_ES = (
 COLUMNAS_EXCEL = (
     ('fecha_programada', 'Fecha programada'),
     ('fecha_pago', 'Fecha canceló'),
-    ('hora_pago', 'Hora'),
     ('registrado_por_nombre', 'Nombre usuario'),
     ('registrado_por', 'ID usuario'),
     ('registrado_en', 'Fecha registro'),
@@ -136,8 +135,6 @@ def exportar_historial_pagos_xlsx(datos: dict) -> bytes:
             '',
             '',
             '',
-            '',
-            '',
             resumen.get('total_capital', '0'),
             resumen.get('total_interes', '0'),
             resumen.get('total_cobrado', '0'),
@@ -210,7 +207,6 @@ def exportar_historial_pagos_pdf(datos: dict) -> bytes:
         [
             'F. programada',
             'F. canceló',
-            'Hora',
             'Nombre usuario',
             'ID usuario',
             'Fecha registro',
@@ -229,7 +225,6 @@ def exportar_historial_pagos_pdf(datos: dict) -> bytes:
             [
                 fila.get('fecha_programada') or '—',
                 fila.get('fecha_pago', ''),
-                fila.get('hora_pago', ''),
                 fila.get('registrado_por_nombre') or '—',
                 str(fila.get('registrado_por') or '—'),
                 fila.get('registrado_en') or '—',
@@ -256,7 +251,6 @@ def exportar_historial_pagos_pdf(datos: dict) -> bytes:
             '',
             '',
             '',
-            '',
             f"{resumen.get('registros', 0)} reg.",
             _money_pdf(resumen.get('total_capital', '0')),
             _money_pdf(resumen.get('total_interes', '0')),
@@ -267,7 +261,6 @@ def exportar_historial_pagos_pdf(datos: dict) -> bytes:
     col_widths = [
         18 * mm,
         18 * mm,
-        14 * mm,
         26 * mm,
         14 * mm,
         26 * mm,
@@ -288,7 +281,7 @@ def exportar_historial_pagos_pdf(datos: dict) -> bytes:
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
                 ('FONTSIZE', (0, 0), (-1, -1), 7),
-                ('ALIGN', (11, 0), (-1, -1), 'RIGHT'),
+                ('ALIGN', (10, 0), (-1, -1), 'RIGHT'),
                 ('GRID', (0, 0), (-1, -1), 0.25, colors.grey),
                 ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#E8EEF4')),
                 ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
