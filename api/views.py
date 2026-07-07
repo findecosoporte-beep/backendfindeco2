@@ -38,6 +38,7 @@ from .historial_pagos_export import (
     exportar_historial_pagos_pdf,
     exportar_historial_pagos_xlsx,
     nombre_archivo_historial,
+    ordenar_filas_historial,
 )
 from .core.cuotas import extract_cuota_numero_from_documento
 from .core.fechas_display import (
@@ -1638,6 +1639,8 @@ def _datos_historial_pagos_cobros(request) -> dict:
                 'cartera_nombre': cartera.nombre if cartera else '',
             }
         )
+
+    ordenar_filas_historial(filas)
 
     total_cobrado = round_money(tot_capital + tot_interes)
     return {

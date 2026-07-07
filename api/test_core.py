@@ -35,6 +35,7 @@ from api.core.distribucion_pago import (
     pendiente_cuota,
     saldo_pendiente_con_abonos,
 )
+from api.historial_pagos_export import clave_orden_fila_historial, ordenar_filas_historial
 
 
 class CoreCuotasTestCase(SimpleTestCase):
@@ -52,6 +53,42 @@ class CoreCuotasTestCase(SimpleTestCase):
 
     def test_extract_cuota_sin_numero_retorna_none(self):
         self.assertIsNone(extract_cuota_numero_from_documento('Pago parcial'))
+
+
+class HistorialPagosOrdenTestCase(SimpleTestCase):
+    def test_orden_filas_por_cartera_cliente_fecha_cuota(self):
+        filas = [
+            {
+                'id_pago': 2,
+                'cartera_nombre': 'LAS LAJAS',
+                'nombre_cliente': 'ZULMA LOPEZ',
+                'fecha_programada': '2026-07-14',
+                'documento': 'Cuota 2',
+            },
+            {
+                'id_pago': 1,
+                'cartera_nombre': 'LA PAZ',
+                'nombre_cliente': 'ANA GARCIA',
+                'fecha_programada': '2026-07-07',
+                'documento': 'Cuota 1',
+            },
+            {
+                'id_pago': 3,
+                'cartera_nombre': 'LAS LAJAS',
+                'nombre_cliente': 'ANA GARCIA',
+                'fecha_programada': '2026-07-07',
+                'documento': 'Cuota 3',
+            },
+        ]
+        ordenar_filas_historial(filas)
+        self.assertEqual(
+            [f['id_pago'] for f in filas],
+            [1, 3, 2],
+        )
+        self.assertLess(
+            clave_orden_fila_historial(filas[0]),
+            clave_orden_fila_historial(filas[1]),
+        )
 
 
 class CoreMoneyTestCase(SimpleTestCase):
