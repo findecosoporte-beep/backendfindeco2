@@ -24,6 +24,8 @@ from api.core.prestamo_calc import (
     plan_totales_desde_condiciones,
     tasa_periodica_para_calculo,
     tasa_semanal_negocio,
+    tasa_mensual_negocio,
+    interes_total_pct_mensual,
 )
 from api.core.reporte_saldos import saldo_pendiente_desde_plan, total_compromiso_desde_plan
 from api.core.distribucion_pago import (
@@ -33,6 +35,7 @@ from api.core.distribucion_pago import (
     pendiente_cuota,
     saldo_pendiente_con_abonos,
 )
+from api.historial_pagos_export import clave_orden_fila_historial, ordenar_filas_historial
 
 
 class CoreCuotasTestCase(SimpleTestCase):
@@ -50,6 +53,42 @@ class CoreCuotasTestCase(SimpleTestCase):
 
     def test_extract_cuota_sin_numero_retorna_none(self):
         self.assertIsNone(extract_cuota_numero_from_documento('Pago parcial'))
+
+
+class HistorialPagosOrdenTestCase(SimpleTestCase):
+    def test_orden_filas_por_cartera_cliente_fecha_cuota(self):
+        filas = [
+            {
+                'id_pago': 2,
+                'cartera_nombre': 'LAS LAJAS',
+                'nombre_cliente': 'ZULMA LOPEZ',
+                'fecha_programada': '2026-07-14',
+                'documento': 'Cuota 2',
+            },
+            {
+                'id_pago': 1,
+                'cartera_nombre': 'LA PAZ',
+                'nombre_cliente': 'ANA GARCIA',
+                'fecha_programada': '2026-07-07',
+                'documento': 'Cuota 1',
+            },
+            {
+                'id_pago': 3,
+                'cartera_nombre': 'LAS LAJAS',
+                'nombre_cliente': 'ANA GARCIA',
+                'fecha_programada': '2026-07-07',
+                'documento': 'Cuota 3',
+            },
+        ]
+        ordenar_filas_historial(filas)
+        self.assertEqual(
+            [f['id_pago'] for f in filas],
+            [1, 3, 2],
+        )
+        self.assertLess(
+            clave_orden_fila_historial(filas[0]),
+            clave_orden_fila_historial(filas[1]),
+        )
 
 
 class CoreMoneyTestCase(SimpleTestCase):
@@ -76,12 +115,12 @@ class CorePrestamoCalcTestCase(SimpleTestCase):
         self.assertEqual(periods_from_months(12, 'mensual'), 12)
 
     def test_tasa_semanal_negocio(self):
-        self.assertEqual(tasa_semanal_negocio(6), Decimal('2.5'))
-        self.assertEqual(tasa_semanal_negocio(8), Decimal('2.5'))
-        self.assertEqual(tasa_semanal_negocio(10), Decimal('2.5'))
-        self.assertEqual(tasa_semanal_negocio(12), Decimal('2.5'))
-        self.assertEqual(tasa_semanal_negocio(16), Decimal('2.5'))
-        self.assertEqual(tasa_semanal_negocio(4), Decimal('10'))
+        for semanas in (2, 4, 6, 8, 10, 12, 16):
+            self.assertEqual(tasa_semanal_negocio(semanas), Decimal('2.5'))
+
+    def test_tasa_mensual_negocio(self):
+        for meses in (1, 3, 6, 12, 24):
+            self.assertEqual(tasa_mensual_negocio(meses), Decimal('10'))
 
     def test_interes_total_pct_semanal_12_semanas_es_30_por_ciento(self):
         self.assertEqual(interes_total_pct_semanal(12), Decimal('30.0'))
@@ -89,6 +128,19 @@ class CorePrestamoCalcTestCase(SimpleTestCase):
         self.assertEqual(interes_total_pct_semanal(8), Decimal('20'))
         self.assertEqual(interes_total_pct_semanal(10), Decimal('25'))
         self.assertEqual(interes_total_pct_semanal(16), Decimal('40'))
+        self.assertEqual(interes_total_pct_semanal(4), Decimal('10'))
+        self.assertEqual(interes_total_pct_semanal(2), Decimal('5'))
+
+    def test_interes_total_pct_mensual(self):
+        self.assertEqual(interes_total_pct_mensual(6), Decimal('60'))
+        self.assertEqual(interes_total_pct_mensual(12), Decimal('120'))
+        self.assertEqual(interes_total_pct_mensual(3), Decimal('30'))
+
+    def test_tasa_periodica_mensual(self):
+        self.assertEqual(
+            tasa_periodica_para_calculo(Decimal('99.00'), 'mensual', 12),
+            Decimal('10'),
+        )
 
     def test_tasa_periodica_semanal_6_semanas(self):
         self.assertEqual(
@@ -261,4 +313,49 @@ class CoreDistribucionPagoTestCase(SimpleTestCase):
     def test_pendiente_cuota_parcial(self):
         cuota = self.Cuota(2, '833.33', '250.00', total='1083.33')
         self.assertEqual(pendiente_cuota(cuota, Decimal('916.67')), Decimal('166.66'))
+
+
+class MovimientosPagoTestCase(SimpleTestCase):
+    """Desglose cuota vs abono_capital desde detalle_distribucion."""
+
+    class PagoStub:
+        def __init__(self, **kwargs):
+            self.id_pago = kwargs.get('id_pago', 1)
+            self.fecha_pago = kwargs.get('fecha_pago', date.today())
+            self.cobrado_en = kwargs.get('cobrado_en')
+            self.documento = kwargs.get('documento')
+            self.capital = kwargs.get('capital', Decimal('0'))
+            self.interes = kwargs.get('interes', Decimal('0'))
+            self.mora = kwargs.get('mora', Decimal('0'))
+            self.detalle_distribucion = kwargs.get('detalle_distribucion')
+            self.numero_factura = kwargs.get('numero_factura')
+
+    def test_movimientos_separan_cuota_y_abono_capital(self):
+        from .core.movimientos_pago import (
+            abonado_por_cuota_desde_movimientos,
+            abonos_capital_desde_pagos,
+            movimientos_desde_pago,
+            pago_tiene_varios_movimientos,
+        )
+
+        pago = self.PagoStub(
+            id_pago=10,
+            documento='Cuota 1',
+            capital=Decimal('2000.00'),
+            interes=Decimal('0.00'),
+            detalle_distribucion=[
+                {'cuota': 1, 'capital': '1083.33', 'interes': '250.00', 'mora': '0.00', 'total': '1333.33'},
+                {'cuota': 2, 'capital': '500.00', 'interes': '166.67', 'mora': '0.00', 'total': '666.67', 'parcial': True},
+                {'abono_capital': True, 'capital': '500.00', 'interes': '0.00', 'mora': '0.00', 'total': '500.00'},
+            ],
+        )
+        movs = movimientos_desde_pago(pago)
+        self.assertEqual(len(movs), 3)
+        self.assertTrue(pago_tiene_varios_movimientos(pago))
+        abonado = abonado_por_cuota_desde_movimientos([pago])
+        self.assertEqual(abonado[1], Decimal('1333.33'))
+        self.assertEqual(abonado[2], Decimal('666.67'))
+        abonos = abonos_capital_desde_pagos([pago])
+        self.assertEqual(len(abonos), 1)
+        self.assertEqual(Decimal(abonos[0]['total']), Decimal('500.00'))
 

@@ -16,23 +16,29 @@ def periodic_rate_from_nominal(tasa_nominal_pct: Decimal, forma_pago: str) -> De
 
 
 def tasa_semanal_negocio(semanas: int) -> Decimal:
-    """Tasa de interés simple por semana según reglas FINDECO.
+    """Tasa de interés simple por semana para préstamos semanales (FINDECO).
 
-    - 6 semanas: 2.5% semanal (15% total).
-    - 8 semanas: 2.5% semanal (20% total).
-    - 10 semanas: 2.5% semanal (25% total).
-    - 12 semanas: 2.5% semanal (30% total).
-    - 16 semanas: 2.5% semanal (40% total).
-    - Resto: 10% semanal.
+    Siempre 2.5% por semana; interés total = semanas × 2.5%.
     """
-    if semanas in (6, 8, 10, 12, 16):
-        return Decimal('2.5')
+    return Decimal('2.5')
+
+
+def tasa_mensual_negocio(meses: int) -> Decimal:
+    """Tasa de interés simple por mes para préstamos mensuales (FINDECO).
+
+    Siempre 10% por mes; interés total = meses × 10%.
+    """
     return Decimal('10')
 
 
 def interes_total_pct_semanal(semanas: int) -> Decimal:
     """Interés total del crédito (%) para préstamos semanales."""
     return tasa_semanal_negocio(semanas) * Decimal(semanas)
+
+
+def interes_total_pct_mensual(meses: int) -> Decimal:
+    """Interés total del crédito (%) para préstamos mensuales."""
+    return tasa_mensual_negocio(meses) * Decimal(meses)
 
 
 def tasa_periodica_para_calculo(
@@ -43,6 +49,8 @@ def tasa_periodica_para_calculo(
     """Porcentaje por cuota usado en interés simple."""
     if forma_pago == 'semanal':
         return tasa_semanal_negocio(plazo)
+    if forma_pago == 'mensual':
+        return tasa_mensual_negocio(plazo)
     return periodic_rate_from_nominal(tasa_nominal_pct, forma_pago)
 
 

@@ -11,6 +11,8 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill
 from openpyxl.worksheet.worksheet import Worksheet
 
+from .core.documento_honduras import normalizar_dni_hn, normalizar_rtn_hn_opcional
+from .core.telefono_honduras import normalizar_telefono_hn_opcional
 from .models import DIA_SEMANA_COBRANZA_CHOICES, Cliente
 
 DIAS_VALIDOS = {choice[0] for choice in DIA_SEMANA_COBRANZA_CHOICES}
@@ -18,6 +20,7 @@ DIAS_VALIDOS = {choice[0] for choice in DIA_SEMANA_COBRANZA_CHOICES}
 CLIENTE_EXCEL_COLUMNS: tuple[tuple[str, str], ...] = (
     ('nombre', 'Nombre *'),
     ('dni', 'DNI *'),
+    ('rtn', 'RTN'),
     ('telefono', 'Teléfono'),
     ('dia_cobro_semanal', 'Día cobro semanal'),
     ('direccion_residencia', 'Dirección residencia'),
@@ -31,6 +34,7 @@ CLIENTE_EXCEL_COLUMNS: tuple[tuple[str, str], ...] = (
 EJEMPLO_FILA = (
     'Juan Pérez López',
     '0801-1990-12345',
+    '08019001234567',
     '9999-8888',
     'lunes',
     'Col. Centro, Tegucigalpa',
@@ -47,6 +51,7 @@ HEADER_ALIASES: dict[str, str] = {
     'dni': 'dni',
     'identidad': 'dni',
     'documento': 'dni',
+    'rtn': 'rtn',
     'telefono': 'telefono',
     'teléfono': 'telefono',
     'tel': 'telefono',
@@ -138,8 +143,11 @@ def _write_workbook(include_example: bool = False) -> bytes:
 
     instructions = workbook.create_sheet('Instrucciones')
     instructions['A1'] = 'Campos obligatorios: Nombre, DNI.'
-    instructions['A2'] = 'Día cobro semanal: lunes, martes, miercoles, jueves, viernes, sabado, domingo.'
-    instructions['A3'] = 'El DNI debe ser único. Filas duplicadas se omiten o actualizan según la opción al importar.'
+    instructions['A2'] = 'DNI: 13 dígitos (formato XXXX-XXXX-XXXXX, ej. 0801-1990-12345).'
+    instructions['A3'] = 'RTN: 14 dígitos (opcional, ej. 08019001234567).'
+    instructions['A4'] = 'Día cobro semanal: lunes, martes, miercoles, jueves, viernes, sabado, domingo.'
+    instructions['A5'] = 'Teléfono: 8 dígitos de Honduras (+504), solo números (ej. 99998888).'
+    instructions['A6'] = 'El DNI debe ser único. Filas duplicadas se omiten o actualizan según la opción al importar.'
 
     buffer = io.BytesIO()
     workbook.save(buffer)
@@ -234,12 +242,15 @@ def importar_clientes_xlsx(file_obj, *, actualizar_existentes: bool = False) -> 
 
             payload = {
                 'nombre': nombre[:100],
-                'dni': dni[:20],
-                'telefono': _empty_to_none(raw.get('telefono')),
+                'dni': normalizar_dni_hn(dni),
+                'rtn': normalizar_rtn_hn_opcional(_empty_to_none(raw.get('rtn'))),
+                'telefono': normalizar_telefono_hn_opcional(_empty_to_none(raw.get('telefono'))),
                 'direccion_residencia': _empty_to_none(raw.get('direccion_residencia')),
                 'direccion_negocio': _empty_to_none(raw.get('direccion_negocio')),
                 'referencia_parentesco': _empty_to_none(raw.get('referencia_parentesco')),
-                'referencia_telefono': _empty_to_none(raw.get('referencia_telefono')),
+                'referencia_telefono': normalizar_telefono_hn_opcional(
+                    _empty_to_none(raw.get('referencia_telefono')),
+                ),
                 'referencia': _empty_to_none(raw.get('referencia')),
                 'actividad_economica': _empty_to_none(raw.get('actividad_economica')),
                 'dia_cobro_semanal': _normalize_dia(raw.get('dia_cobro_semanal')),
