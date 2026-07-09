@@ -18,3 +18,6 @@ WRITE_DOCUMENTOS = WRITE_COBROS
 
 # Contratos de préstamo
 WRITE_CONTRATOS = ('administrador', 'supervisor', 'asesor')
+
+# Configuración del sistema (facturación SAR, etc.)
+WRITE_CONFIGURACION = WRITE_ADMIN

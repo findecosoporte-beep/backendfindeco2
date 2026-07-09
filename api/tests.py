@@ -16,6 +16,7 @@ from rest_framework.test import APITestCase
 from .models import (
     Cartera,
     Cliente,
+    ConfiguracionFacturacion,
     HojaCobroImpresion,
     Pago,
     Prestamo,
@@ -24,6 +25,8 @@ from .models import (
     UsuarioCartera,
     Zona,
 )
+from .core.facturacion_sar import formatear_numero_factura_sar
+from .estado_cuenta_export import recolectar_datos_estado_cuenta
 from .serializers import PrestamoSerializer
 
 
@@ -156,6 +159,26 @@ class RolePermissionIntegrationTestCase(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data['nombre'], self.cliente_payload['nombre'])
+        self.assertEqual(response.data['dni'], '0801-2000-00002')
+
+    def test_cliente_rechaza_dni_invalido(self):
+        self._auth_with_role(role='supervisor', email='supervisor.dni@test.com')
+        payload = {**self.cliente_payload, 'dni': '0801-2000'}
+        response = self.client.post('/api/v1/clientes/', data=payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_cliente_normaliza_dni_sin_guiones(self):
+        self._auth_with_role(role='supervisor', email='supervisor.dni.fmt@test.com')
+        payload = {**self.cliente_payload, 'dni': '0801200000003'}
+        response = self.client.post('/api/v1/clientes/', data=payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['dni'], '0801-2000-00003')
+
+    def test_cliente_rechaza_rtn_invalido(self):
+        self._auth_with_role(role='supervisor', email='supervisor.rtn@test.com')
+        payload = {**self.cliente_payload, 'rtn': '08019001'}
+        response = self.client.post('/api/v1/clientes/', data=payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_asesor_no_puede_crear_cartera(self):
         self._auth_with_role(role='asesor', email='asesor.cartera@test.com')
@@ -398,6 +421,8 @@ class RolePermissionIntegrationTestCase(APITestCase):
         self.assertIsNotNone(response.data['cobrado_en'])
         pago = Pago.objects.get(pk=response.data['id_pago'])
         self.assertIsNotNone(pago.cobrado_en)
+        self.assertEqual(pago.registrado_por_id, usuario_operativo.id_usuario)
+        self.assertEqual(response.data['registrado_por'], usuario_operativo.id_usuario)
 
     def test_estado_cuenta_pdf_prestamo_retorna_pdf(self):
         self._auth_with_role(role='supervisor', email='pdf.estado@test.com')
@@ -497,7 +522,7 @@ class RolePermissionIntegrationTestCase(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_pago_excedente_abona_resto_a_capital(self):
-        """Si el cliente paga de más, se cierra la cuota actual y el resto va a capital."""
+        """Si el cliente paga de más, el excedente avanza a la siguiente cuota (capital)."""
         self._auth_with_role(role='supervisor', email='excedente.cuota@test.com')
         cliente = Cliente.objects.create(nombre='Cliente Excedente', dni='0801-2000-00016')
         cartera = Cartera.objects.create(nombre='Cartera Excedente', dia_cobro='lunes')
@@ -537,7 +562,8 @@ class RolePermissionIntegrationTestCase(APITestCase):
         self.assertIn('distribucion', response.data)
         self.assertEqual(len(response.data['distribucion']), 2)
         self.assertEqual(response.data['distribucion'][0]['cuota'], 1)
-        self.assertTrue(response.data['distribucion'][1].get('abono_capital'))
+        self.assertEqual(response.data['distribucion'][1]['cuota'], 2)
+        self.assertTrue(response.data['distribucion'][1].get('parcial'))
 
         pagos = Pago.objects.filter(id_prestamo=prestamo).order_by('id_pago')
         self.assertEqual(pagos.count(), 1)
@@ -546,7 +572,8 @@ class RolePermissionIntegrationTestCase(APITestCase):
         self.assertEqual(Decimal(pago.monto_recibido_cliente), Decimal('2000.00'))
         self.assertEqual(len(pago.detalle_distribucion or []), 2)
         self.assertEqual(pago.detalle_distribucion[0].get('cuota'), 1)
-        self.assertTrue(pago.detalle_distribucion[1].get('abono_capital'))
+        self.assertEqual(pago.detalle_distribucion[1].get('cuota'), 2)
+        self.assertTrue(pago.detalle_distribucion[1].get('parcial'))
 
         pdf_pago = self.client.get(f'/api/v1/pagos/{pago.id_pago}/factura-pdf/')
         self.assertEqual(pdf_pago.status_code, status.HTTP_200_OK)
@@ -562,9 +589,150 @@ class RolePermissionIntegrationTestCase(APITestCase):
         fila = filas[0]
         self.assertEqual(Decimal(fila['saldo_inicial']), Decimal('11500.00'))
         self.assertEqual(Decimal(fila['saldo_actual']), Decimal('9500.00'))
+        abono_cuota_2 = Decimal('2000.00') - cuota_1.total_programado
+        pendiente_cuota_2 = cuota_2.total_programado - abono_cuota_2
         self.assertEqual(fila['cuota_siguiente_numero'], 2)
-        self.assertEqual(Decimal(fila['cuota_siguiente_monto']), cuota_2.total_programado)
+        self.assertEqual(Decimal(fila['cuota_siguiente_monto']), pendiente_cuota_2)
+        self.assertEqual(Decimal(fila['cuota_siguiente_abonado']), abono_cuota_2)
+        self.assertEqual(Decimal(fila['cuota_anterior_numero']), 1)
+        self.assertEqual(Decimal(fila['cuota_anterior_abonado']), cuota_1.total_programado)
+        self.assertEqual(
+            Decimal(fila['total_abono_anterior_mas_cuota']),
+            cuota_1.total_programado + cuota_2.total_programado,
+        )
         self.assertEqual(Decimal(pagos.last().saldo), Decimal('9500.00'))
+
+    def test_pago_unico_liquida_prestamo_completo_marca_todas_las_cuotas(self):
+        """Un solo cobro que cubre todas las cuotas restantes liquida el préstamo."""
+        self._auth_with_role(role='supervisor', email='liquida.prestamo@test.com')
+        cliente = Cliente.objects.create(nombre='Cliente Liquida', dni='0801-2000-00028')
+        cartera = Cartera.objects.create(nombre='Cartera Liquida', dia_cobro='lunes')
+        usuario_operativo = Usuario.objects.get(correo='liquida.prestamo@test.com')
+        payload_prestamo = {
+            'numero_prestamo': 'PRE-LIQ-001',
+            'id_cliente': cliente.id_cliente,
+            'id_usuario': usuario_operativo.id_usuario,
+            'id_cartera': cartera.id_cartera,
+            'monto': '3000.00',
+            'plazo': 3,
+            'tasa_interes': '10.00',
+            'estado': 'activo',
+            'forma_pago': 'semanal',
+            'forma_desembolso': 'efectivo',
+            'comision': '0.00',
+            'fecha_entrega': date(2026, 6, 21).isoformat(),
+        }
+        response_prestamo = self.client.post('/api/v1/prestamos/', data=payload_prestamo, format='json')
+        self.assertEqual(response_prestamo.status_code, status.HTTP_201_CREATED)
+        prestamo = Prestamo.objects.get(numero_prestamo='PRE-LIQ-001')
+        cuota_1 = PrestamoCuota.objects.get(id_prestamo=prestamo, numero_cuota=1)
+        self.assertEqual(cuota_1.total_programado, Decimal('1300.00'))
+
+        payload_pago = {
+            'id_prestamo': prestamo.id_prestamo,
+            'fecha_pago': date.today().isoformat(),
+            'documento': 'Cuota 1',
+            'capital': str(cuota_1.capital_programado),
+            'interes': str(cuota_1.interes_programado),
+            'mora': '0.00',
+            'saldo': '0.00',
+            # Cubre las 3 cuotas del plan (3 x 1300.00 = 3900.00) en un solo cobro.
+            'monto_recibido': '3900.00',
+        }
+        response = self.client.post('/api/v1/pagos/', data=payload_pago, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+
+        pago = Pago.objects.get(id_prestamo=prestamo)
+        self.assertEqual(Decimal(pago.saldo), Decimal('0.00'))
+        detalle = pago.detalle_distribucion or []
+        self.assertEqual(len(detalle), 2)
+        self.assertTrue(detalle[1].get('abono_capital'))
+        self.assertTrue(detalle[1].get('liquida_prestamo'))
+
+        prestamo.refresh_from_db()
+        self.assertEqual(prestamo.estado, 'pagado')
+
+        pdf_pago = self.client.get(f'/api/v1/pagos/{pago.id_pago}/factura-pdf/')
+        self.assertEqual(pdf_pago.status_code, status.HTTP_200_OK)
+        self.assertTrue(pdf_pago.content.startswith(b'%PDF'))
+
+        datos_estado = recolectar_datos_estado_cuenta(prestamo)
+        self.assertEqual(len(datos_estado['cuotas']), 3)
+        for fila in datos_estado['cuotas']:
+            self.assertEqual(fila['estado'], 'Pagada')
+        self.assertEqual(datos_estado['resumen']['cuotas_pagadas'], 3)
+        self.assertEqual(datos_estado['resumen']['cuotas_pendientes'], 0)
+
+    def test_pago_adelanta_varias_cuotas_sin_liquidar_bloquea_doble_cobro(self):
+        """Adelantar cuotas (sin liquidar el préstamo) las cubre y evita cobrarlas de nuevo."""
+        self._auth_with_role(role='supervisor', email='adelanta.cuotas@test.com')
+        cliente = Cliente.objects.create(nombre='Cliente Adelanta', dni='0801-2000-00029')
+        cartera = Cartera.objects.create(nombre='Cartera Adelanta', dia_cobro='lunes')
+        usuario_operativo = Usuario.objects.get(correo='adelanta.cuotas@test.com')
+        payload_prestamo = {
+            'numero_prestamo': 'PRE-ADEL-001',
+            'id_cliente': cliente.id_cliente,
+            'id_usuario': usuario_operativo.id_usuario,
+            'id_cartera': cartera.id_cartera,
+            'monto': '10000.00',
+            'plazo': 6,
+            'tasa_interes': '10.00',
+            'estado': 'activo',
+            'forma_pago': 'semanal',
+            'forma_desembolso': 'efectivo',
+            'comision': '0.00',
+            'fecha_entrega': date(2026, 6, 21).isoformat(),
+        }
+        response_prestamo = self.client.post('/api/v1/prestamos/', data=payload_prestamo, format='json')
+        self.assertEqual(response_prestamo.status_code, status.HTTP_201_CREATED)
+        prestamo = Prestamo.objects.get(numero_prestamo='PRE-ADEL-001')
+        cuota_1 = PrestamoCuota.objects.get(id_prestamo=prestamo, numero_cuota=1)
+        self.assertEqual(cuota_1.total_programado, Decimal('1916.67'))
+
+        # Paga el equivalente a 4 cuotas de una sola vez (4 x 1916.67 = 7666.68).
+        payload_pago = {
+            'id_prestamo': prestamo.id_prestamo,
+            'fecha_pago': date.today().isoformat(),
+            'documento': 'Cuota 1',
+            'capital': str(cuota_1.capital_programado),
+            'interes': str(cuota_1.interes_programado),
+            'mora': '0.00',
+            'saldo': '0.00',
+            'monto_recibido': '7666.68',
+        }
+        response = self.client.post('/api/v1/pagos/', data=payload_pago, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+
+        prestamo.refresh_from_db()
+        self.assertNotEqual(prestamo.estado, 'pagado')
+
+        datos_estado = recolectar_datos_estado_cuenta(prestamo)
+        estados_por_cuota = {f['numero_cuota']: f['estado'] for f in datos_estado['cuotas']}
+        self.assertEqual(estados_por_cuota[1], 'Pagada')
+        self.assertEqual(estados_por_cuota[2], 'Pagada')
+        self.assertEqual(estados_por_cuota[3], 'Pagada')
+        self.assertEqual(estados_por_cuota[4], 'Pagada')
+        self.assertEqual(estados_por_cuota[5], 'Pendiente')
+        self.assertEqual(estados_por_cuota[6], 'Pendiente')
+
+        reporte = self.client.get(
+            f'/api/v1/prestamos/reporte-integracion/?id_prestamo={prestamo.id_prestamo}&all=1'
+        )
+        fila = reporte.data['filas'][0]
+        self.assertEqual(fila['cuota_siguiente_numero'], 5)
+
+        # Intentar cobrar la cuota 2 (ya cubierta por el adelanto) debe rechazarse.
+        payload_doble_cobro = {
+            'id_prestamo': prestamo.id_prestamo,
+            'fecha_pago': date.today().isoformat(),
+            'documento': 'Cuota 2',
+            'capital': '1666.67',
+            'interes': '250.00',
+            'mora': '0.00',
+            'saldo': '0.00',
+        }
+        respuesta_doble = self.client.post('/api/v1/pagos/', data=payload_doble_cobro, format='json')
+        self.assertEqual(respuesta_doble.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_pago_parcial_queda_saldo_en_misma_cuota_sin_interes_adicional(self):
         """Si el cliente paga menos que la cuota, se registra el abono y la cuota sigue abierta."""
@@ -622,6 +790,12 @@ class RolePermissionIntegrationTestCase(APITestCase):
         fila = reporte.data['filas'][0]
         self.assertEqual(fila['cuota_siguiente_numero'], 1)
         self.assertEqual(Decimal(fila['cuota_siguiente_monto']), pendiente_cuota_1)
+        self.assertEqual(Decimal(fila['cuota_siguiente_abonado']), abono_parcial)
+        self.assertEqual(Decimal(fila['cuota_siguiente_monto_programado']), cuota_1.total_programado)
+        self.assertEqual(
+            Decimal(fila['total_abono_anterior_mas_cuota']),
+            abono_parcial + cuota_1.total_programado,
+        )
         self.assertGreater(Decimal(pago.saldo), Decimal('0.00'))
 
     def test_historial_pagos_cobros_por_dia(self):
@@ -670,6 +844,15 @@ class RolePermissionIntegrationTestCase(APITestCase):
         self.assertIn('generado_en', response.data)
         self.assertIn('hora_pago', response.data['filas'][0])
         self.assertIn('cobrado_en', response.data['filas'][0])
+        self.assertEqual(
+            response.data['filas'][0]['registrado_por'],
+            Usuario.objects.get(correo='hist.pagos@test.com').id_usuario,
+        )
+        self.assertIn('registrado_por_etiqueta', response.data['filas'][0])
+        self.assertEqual(
+            response.data['filas'][0]['registrado_por_nombre'],
+            Usuario.objects.get(correo='hist.pagos@test.com').nombre,
+        )
 
         vacio = self.client.get('/api/v1/pagos/historial-cobros/?modo=dia&fecha=2020-01-01')
         self.assertEqual(vacio.status_code, status.HTTP_200_OK)
@@ -1060,6 +1243,9 @@ class RolePermissionIntegrationTestCase(APITestCase):
         }
         response = self.client.post('/api/v1/prestamos/', data=payload, format='json')
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['creado_por'], usuario_operativo.id_usuario)
+        self.assertEqual(response.data['creado_por_nombre'], usuario_operativo.nombre)
+        self.assertIsNotNone(response.data['creado_en'])
 
         prestamo = Prestamo.objects.get(numero_prestamo='PRE-AUTO-001')
         cuotas = PrestamoCuota.objects.filter(id_prestamo=prestamo).order_by('numero_cuota')
@@ -1132,7 +1318,7 @@ class RolePermissionIntegrationTestCase(APITestCase):
             self.assertEqual(cuota.fecha_programada.weekday(), 0)
 
     def test_crear_prestamo_semanal_aplica_tasa_negocio_por_semanas(self):
-        """Semanal: 6 semanas → 2.5%; otras → 10% semanal; interés simple fijo."""
+        """Semanal: siempre 2.5% por semana; interés total = semanas × 2.5%."""
         self._auth_with_role(role='supervisor', email='plan.semanal@test.com')
         cliente = Cliente.objects.create(nombre='Cliente Plan Semanal', dni='0801-2000-00014')
         cartera = Cartera.objects.create(nombre='Cartera Plan Semanal', dia_cobro='miercoles')
@@ -1340,6 +1526,260 @@ class ProductionSettingsTestCase(SimpleTestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
         self.assertIn('False', result.stdout)
+
+
+class ConfiguracionFacturacionTestCase(APITestCase):
+    """API y numeracion SAR de facturacion."""
+
+    def setUp(self):
+        self.user_model = get_user_model()
+
+    def _auth_with_role(self, role: str, email: str):
+        django_user = self.user_model.objects.create_user(
+            username=email,
+            email=email,
+            password='Secreta123!',
+        )
+        Usuario.objects.create(
+            nombre=f'Usuario {role}',
+            rol=role,
+            correo=email,
+            clave='hash-falso',
+        )
+        self.client.force_authenticate(user=django_user)
+
+    def test_get_configuracion_crea_singleton(self):
+        self._auth_with_role(role='cobrador', email='cobrador.config@test.com')
+        response = self.client.get('/api/v1/configuracion/facturacion/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['id'], 1)
+        self.assertTrue(ConfiguracionFacturacion.objects.filter(pk=1).exists())
+
+    def test_cobrador_no_puede_editar_configuracion(self):
+        self._auth_with_role(role='cobrador', email='cobrador.config2@test.com')
+        response = self.client.patch(
+            '/api/v1/configuracion/facturacion/',
+            data={'razon_social': 'Findeco SA'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_supervisor_actualiza_configuracion_sar(self):
+        self._auth_with_role(role='supervisor', email='super.config@test.com')
+        payload = {
+            'razon_social': 'Findeco Honduras SA',
+            'rtn': '08019001234567',
+            'cai': 'ABC123-456789-DEF',
+            'fecha_limite_emision': (date.today() + timedelta(days=365)).isoformat(),
+            'establecimiento': '001',
+            'punto_emision': '002',
+            'tipo_documento': '01',
+            'correlativo_desde': 1,
+            'correlativo_hasta': 5000,
+            'correlativo_actual': 10,
+            'usar_numeracion_sar': True,
+        }
+        response = self.client.patch('/api/v1/configuracion/facturacion/', data=payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['razon_social'], payload['razon_social'])
+        self.assertIn('001-002-01', response.data['numero_ejemplo'])
+
+    def test_formatear_numero_factura_sar(self):
+        numero = formatear_numero_factura_sar('1', '2', '1', 42)
+        self.assertEqual(numero, '001-002-01-00000042')
+
+    def test_eliminar_prestamo_con_cobros_devuelve_400(self):
+        self._auth_with_role(role='supervisor', email='del.prestamo.cobros@test.com')
+        cliente = Cliente.objects.create(nombre='Cliente Del Cobros', dni='0801-2000-00999')
+        usuario_operativo = Usuario.objects.get(correo='del.prestamo.cobros@test.com')
+        prestamo = Prestamo.objects.create(
+            numero_prestamo='PRE-DEL-COBROS',
+            id_cliente=cliente,
+            id_usuario=usuario_operativo,
+            monto=Decimal('5000.00'),
+            plazo=4,
+            tasa_interes=Decimal('10.00'),
+            estado='activo',
+            forma_pago='semanal',
+            forma_desembolso='efectivo',
+            comision=Decimal('0.00'),
+            fecha_entrega=date.today(),
+            fecha_vencimiento=date.today(),
+        )
+        Pago.objects.create(
+            id_prestamo=prestamo,
+            fecha_pago=date.today(),
+            documento='Cuota 1',
+            capital=Decimal('1000.00'),
+            interes=Decimal('100.00'),
+            mora=Decimal('0.00'),
+            saldo=Decimal('4000.00'),
+        )
+        response = self.client.delete(f'/api/v1/prestamos/{prestamo.id_prestamo}/')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(response.data['success'])
+        self.assertIn('cobro', response.data['error']['message'].lower())
+        self.assertTrue(Prestamo.objects.filter(id_prestamo=prestamo.id_prestamo).exists())
+
+    def test_eliminar_prestamo_sin_cobros_ok(self):
+        self._auth_with_role(role='supervisor', email='del.prestamo.ok@test.com')
+        cliente = Cliente.objects.create(nombre='Cliente Del OK', dni='0801-2000-00998')
+        usuario_operativo = Usuario.objects.get(correo='del.prestamo.ok@test.com')
+        prestamo = Prestamo.objects.create(
+            numero_prestamo='PRE-DEL-OK',
+            id_cliente=cliente,
+            id_usuario=usuario_operativo,
+            monto=Decimal('3000.00'),
+            plazo=4,
+            tasa_interes=Decimal('10.00'),
+            estado='activo',
+            forma_pago='semanal',
+            forma_desembolso='efectivo',
+            comision=Decimal('0.00'),
+            fecha_entrega=date.today(),
+            fecha_vencimiento=date.today(),
+        )
+        response = self.client.delete(f'/api/v1/prestamos/{prestamo.id_prestamo}/')
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(Prestamo.objects.filter(id_prestamo=prestamo.id_prestamo).exists())
+
+
+class ReporteSarTrimestralTestCase(APITestCase):
+    """Reporte regulatorio trimestral SAR."""
+
+    def setUp(self):
+        self.user_model = get_user_model()
+
+    def _auth_with_role(self, role: str, email: str):
+        django_user = self.user_model.objects.create_user(
+            username=email,
+            email=email,
+            password='Secreta123!',
+        )
+        Usuario.objects.create(
+            nombre=f'Usuario {role}',
+            rol=role,
+            correo=email,
+            clave='hash-falso',
+        )
+        self.client.force_authenticate(user=django_user)
+
+    def test_reporte_sar_trimestral_requiere_parametros(self):
+        self._auth_with_role(role='supervisor', email='sar.param@test.com')
+        response = self.client.get('/api/v1/reportes/sar/')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_reporte_sar_trimestral_consolida_periodo(self):
+        self._auth_with_role(role='supervisor', email='sar.reporte@test.com')
+        cliente = Cliente.objects.create(
+            nombre='Cliente SAR',
+            dni='0801-2000-00997',
+            rtn='08019009998877',
+        )
+        usuario_operativo = Usuario.objects.get(correo='sar.reporte@test.com')
+        cartera = Cartera.objects.create(nombre='Cartera SAR', dia_cobro='lunes')
+        prestamo = Prestamo.objects.create(
+            numero_prestamo='PRE-SAR-001',
+            id_cliente=cliente,
+            id_usuario=usuario_operativo,
+            id_cartera=cartera,
+            monto=Decimal('10000.00'),
+            plazo=4,
+            tasa_interes=Decimal('10.00'),
+            estado='activo',
+            forma_pago='semanal',
+            forma_desembolso='efectivo',
+            comision=Decimal('0.00'),
+            fecha_entrega=date(2026, 2, 15),
+            fecha_vencimiento=date(2026, 6, 15),
+        )
+        Pago.objects.create(
+            id_prestamo=prestamo,
+            fecha_pago=date(2026, 3, 10),
+            documento='Cuota 1',
+            capital=Decimal('2000.00'),
+            interes=Decimal('200.00'),
+            mora=Decimal('0.00'),
+            saldo=Decimal('8000.00'),
+        )
+        response = self.client.get('/api/v1/reportes/sar/?trimestre=1&anio=2026')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['trimestre'], 1)
+        self.assertEqual(response.data['anio'], 2026)
+        self.assertEqual(response.data['total_prestamos_otorgados'], 1)
+        self.assertEqual(response.data['monto_prestamos_otorgados'], '10000.00')
+        self.assertEqual(response.data['ingresos_intereses'], '200.00')
+        self.assertEqual(response.data['pagos_recibidos'], '2200.00')
+        self.assertGreaterEqual(response.data['cartera_vigente']['prestamos'], 1)
+        self.assertIn('encabezado', response.data)
+        self.assertIn('detalle_operaciones', response.data)
+        self.assertEqual(
+            response.data['detalle_operaciones']['total_prestamos_otorgados'],
+            1,
+        )
+        self.assertEqual(response.data['ingresos']['total_abonos_capital'], '2000.00')
+        self.assertIn('por_rango_dias', response.data['cartera_vencida'])
+        self.assertIn('porcentaje_morosidad', response.data['resumen'])
+
+    def test_reporte_sar_clasifica_mora_por_rango(self):
+        self._auth_with_role(role='supervisor', email='sar.mora@test.com')
+        cliente = Cliente.objects.create(nombre='Cliente Mora', dni='0801-2000-00998')
+        usuario_operativo = Usuario.objects.get(correo='sar.mora@test.com')
+        Prestamo.objects.create(
+            numero_prestamo='PRE-MORA-45',
+            id_cliente=cliente,
+            id_usuario=usuario_operativo,
+            monto=Decimal('5000.00'),
+            plazo=4,
+            tasa_interes=Decimal('12.00'),
+            estado='mora',
+            dias_mora=45,
+            forma_pago='semanal',
+            forma_desembolso='efectivo',
+            comision=Decimal('2.00'),
+            fecha_entrega=date(2025, 12, 1),
+            fecha_vencimiento=date(2026, 4, 1),
+        )
+        response = self.client.get('/api/v1/reportes/sar/?trimestre=1&anio=2026')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        rango = response.data['cartera_vencida']['por_rango_dias']['de_31_a_60']
+        self.assertGreaterEqual(rango['prestamos'], 1)
+
+    def test_cliente_puede_tener_rtn(self):
+        self._auth_with_role(role='supervisor', email='cliente.rtn@test.com')
+        payload = {
+            'nombre': 'Empresa Demo',
+            'dni': '0801-2000-00996',
+            'rtn': '08019001112233',
+            'telefono': '9999-0000',
+        }
+        response = self.client.post('/api/v1/clientes/', data=payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['rtn'], '08019001112233')
+
+    def test_reporte_sar_trimestral_pdf(self):
+        self._auth_with_role(role='supervisor', email='sar.pdf@test.com')
+        response = self.client.get('/api/v1/reportes/sar/?trimestre=2&anio=2026&formato=pdf')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response['Content-Type'], 'application/pdf')
+        self.assertTrue(response.content.startswith(b'%PDF'))
+        self.assertIn('reporte-sar-T2-2026.pdf', response['Content-Disposition'])
+
+
+class DocumentoHondurasCoreTestCase(SimpleTestCase):
+    """Normalización de DNI y RTN de Honduras."""
+
+    def test_normalizar_dni_formatea(self):
+        from api.core.documento_honduras import normalizar_dni_hn
+
+        self.assertEqual(normalizar_dni_hn('0801199012345'), '0801-1990-12345')
+        self.assertEqual(normalizar_dni_hn('0801-1990-12345'), '0801-1990-12345')
+
+    def test_normalizar_rtn_solo_digitos(self):
+        from api.core.documento_honduras import normalizar_rtn_hn_opcional
+
+        self.assertEqual(normalizar_rtn_hn_opcional('08019001234567'), '08019001234567')
+        self.assertIsNone(normalizar_rtn_hn_opcional(''))
 
 
 class OpenApiSettingsTestCase(APITestCase):

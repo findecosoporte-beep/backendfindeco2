@@ -9,15 +9,25 @@ from django.db.models import Max
 from django.utils import timezone
 from rest_framework import serializers
 
-from .cobrador_scope import validar_cobro_por_cartera
+from .cobrador_scope import validar_cobro_por_cartera, usuario_operativo_desde_request
+from .core.documento_honduras import normalizar_dni_hn, normalizar_rtn_hn_opcional
+from .core.telefono_honduras import normalizar_telefono_hn_opcional
 from .core.cuotas import extract_cuota_numero_from_documento
 from .core.distribucion_pago import (
     CUOTA_PAGADA_TOLERANCIA,
     abonado_por_cuota_desde_pagos,
     cuota_esta_pagada,
-    distribuir_cobro_con_excedente_a_capital,
+    cuotas_cubiertas_por_pago_acumulado,
+    distribuir_monto_en_cuotas,
     pendiente_cuota,
     saldo_pendiente_tras_abono,
+    total_abonado_prestamo,
+)
+from .core.facturacion_sar import (
+    ErrorFacturacionSAR,
+    asignar_numero_factura_sar,
+    formatear_numero_factura_sar,
+    texto_rango_autorizado,
 )
 from .core.fechas import calculate_fecha_cuota, calculate_fecha_vencimiento
 from .core.money import round_money
@@ -25,11 +35,13 @@ from .core.prestamo_calc import (
     periodos_desde_plazo,
     tasa_periodica_para_calculo,
     tasa_semanal_negocio,
+    tasa_mensual_negocio,
 )
 from .models import (
     Cartera,
     Cliente,
     ClienteDocumento,
+    ConfiguracionFacturacion,
     ContratoPrestamo,
     HistorialPrestamo,
     Pago,
@@ -121,6 +133,36 @@ class ClienteSerializer(serializers.ModelSerializer):
     class Meta:
         model = Cliente
         fields = '__all__'
+
+    def validate_dni(self, value: str) -> str:
+        try:
+            return normalizar_dni_hn(value)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc)) from exc
+
+    def validate_rtn(self, value: str | None) -> str | None:
+        if value in (None, ''):
+            return None
+        try:
+            return normalizar_rtn_hn_opcional(value)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc)) from exc
+
+    def validate_telefono(self, value: str | None) -> str | None:
+        if value in (None, ''):
+            return None
+        try:
+            return normalizar_telefono_hn_opcional(value)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc)) from exc
+
+    def validate_referencia_telefono(self, value: str | None) -> str | None:
+        if value in (None, ''):
+            return None
+        try:
+            return normalizar_telefono_hn_opcional(value)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc)) from exc
 
     def get_total_prestamos(self, obj: Cliente) -> int:
         count = getattr(obj, 'prestamos_count', None)
@@ -450,13 +492,33 @@ class PrestamoSerializer(serializers.ModelSerializer):
 
     zona = ZonaSerializer(source='id_zona', read_only=True)
     cartera = CarteraSerializer(source='id_cartera', read_only=True)
+    creado_por_nombre = serializers.CharField(read_only=True)
+    modificado_por_nombre = serializers.CharField(read_only=True)
 
     class Meta:
         model = Prestamo
         fields = '__all__'
         extra_kwargs = {
             'fecha_vencimiento': {'required': False},
+            'creado_en': {'read_only': True},
+            'creado_por': {'read_only': True},
+            'modificado_por': {'read_only': True},
+            'actualizado_en': {'read_only': True},
         }
+
+    def to_representation(self, instance: Prestamo) -> dict:
+        data = super().to_representation(instance)
+        data['creado_por_nombre'] = instance.creado_por.nombre if instance.creado_por_id else None
+        data['modificado_por_nombre'] = (
+            instance.modificado_por.nombre if instance.modificado_por_id else None
+        )
+        return data
+
+    def _actor_desde_contexto(self) -> Usuario | None:
+        request = self.context.get('request')
+        if request is None:
+            return None
+        return usuario_operativo_desde_request(request)
 
     def _aplicar_cartera_en_attrs(self, attrs: dict) -> dict:
         cartera = attrs.get('id_cartera')
@@ -502,8 +564,10 @@ class PrestamoSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError('El plazo debe ser mayor a cero.')
         if comision is not None and comision < 0:
             raise serializers.ValidationError('La comision no puede ser negativa.')
-        if instance is None and forma_pago == 'semanal' and plazo is not None:
+        if forma_pago == 'semanal' and plazo is not None:
             attrs['tasa_interes'] = tasa_semanal_negocio(int(plazo))
+        elif forma_pago == 'mensual' and plazo is not None:
+            attrs['tasa_interes'] = tasa_mensual_negocio(int(plazo))
         if fecha_entrega is not None and plazo is not None and forma_pago is not None:
             cartera = attrs.get('id_cartera', getattr(instance, 'id_cartera', None))
             cliente = _resolver_cliente_en_attrs(attrs, instance)
@@ -533,6 +597,10 @@ class PrestamoSerializer(serializers.ModelSerializer):
 
     @transaction.atomic
     def create(self, validated_data):
+        actor = self._actor_desde_contexto()
+        if actor is not None:
+            validated_data['creado_por'] = actor
+            validated_data['modificado_por'] = actor
         cliente = validated_data.get('id_cliente')
         if cliente is not None:
             validated_data['ciclos'] = _ciclos_para_renovacion(cliente)
@@ -597,6 +665,13 @@ class PrestamoSerializer(serializers.ModelSerializer):
         PrestamoCuota.objects.bulk_create(cuotas)
         return prestamo
 
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        actor = self._actor_desde_contexto()
+        if actor is not None:
+            validated_data['modificado_por'] = actor
+        return super().update(instance, validated_data)
+
 
 class SimulacionPrestamoSerializer(serializers.Serializer):
     """Entrada para simular cuota y tabla de amortizacion."""
@@ -627,10 +702,34 @@ class PagoSerializer(serializers.ModelSerializer):
         write_only=True,
         help_text='Monto total cobrado; si excede la cuota, se aplica a las siguientes.',
     )
+    monto_total = serializers.SerializerMethodField(
+        help_text='Suma capital + interes + mora del cobro.',
+    )
+    registrado_por_nombre = serializers.CharField(read_only=True)
 
     class Meta:
         model = Pago
         fields = '__all__'
+        extra_kwargs = {
+            'registrado_por': {'read_only': True},
+        }
+
+    def to_representation(self, instance: Pago) -> dict:
+        data = super().to_representation(instance)
+        data['registrado_por_nombre'] = (
+            instance.registrado_por.nombre if instance.registrado_por_id else None
+        )
+        return data
+
+    def _actor_registro(self) -> Usuario | None:
+        request = self.context.get('request')
+        if request is None:
+            return None
+        return usuario_operativo_desde_request(request)
+
+    def get_monto_total(self, obj: Pago) -> str:
+        total = Decimal(obj.capital) + Decimal(obj.interes) + Decimal(obj.mora)
+        return str(round_money(total))
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -648,6 +747,7 @@ class PagoSerializer(serializers.ModelSerializer):
         cuota_numero: int,
         plan_rows: list[PrestamoCuota],
         abonado_previo: dict[int, Decimal],
+        abonado_total: Decimal,
     ) -> None:
         fila = next((row for row in plan_rows if row.numero_cuota == cuota_numero), None)
         if fila is None:
@@ -656,6 +756,14 @@ class PagoSerializer(serializers.ModelSerializer):
         if cuota_esta_pagada(abonado, Decimal(fila.total_programado)):
             raise serializers.ValidationError(
                 f'La cuota {cuota_numero} ya está pagada en su totalidad.'
+            )
+        # El cliente pudo haber adelantado varias cuotas de una sola vez (el excedente
+        # quedó como abono a capital); si el acumulado ya cubre esta cuota, no se
+        # puede volver a cobrar aunque no tenga un pago propio con este número.
+        cubiertas = cuotas_cubiertas_por_pago_acumulado(plan_rows, abonado_total)
+        if cuota_numero in cubiertas:
+            raise serializers.ValidationError(
+                f'La cuota {cuota_numero} ya está cubierta por abonos anteriores del cliente.'
             )
 
     def validate(self, attrs):
@@ -684,8 +792,12 @@ class PagoSerializer(serializers.ModelSerializer):
             plan_rows = list(
                 PrestamoCuota.objects.filter(id_prestamo=prestamo).order_by('numero_cuota')
             )
-            abonado_previo = abonado_por_cuota_desde_pagos(self._pagos_existentes(prestamo))
-            self._validar_cuota_inicio_abierta(prestamo, cuota_numero, plan_rows, abonado_previo)
+            pagos_existentes = list(self._pagos_existentes(prestamo))
+            abonado_previo = abonado_por_cuota_desde_pagos(pagos_existentes)
+            abonado_total = total_abonado_prestamo(pagos_existentes)
+            self._validar_cuota_inicio_abierta(
+                prestamo, cuota_numero, plan_rows, abonado_previo, abonado_total,
+            )
         return attrs
 
     @staticmethod
@@ -710,6 +822,7 @@ class PagoSerializer(serializers.ModelSerializer):
 
     @transaction.atomic
     def create(self, validated_data):
+        actor = self._actor_registro()
         monto_recibido = validated_data.pop('monto_recibido', None)
         monto_recibido_cliente = (
             round_money(Decimal(monto_recibido)) if monto_recibido is not None else None
@@ -755,7 +868,7 @@ class PagoSerializer(serializers.ModelSerializer):
                 debe_distribuir = True
 
         if debe_distribuir:
-            lineas = distribuir_cobro_con_excedente_a_capital(
+            lineas = distribuir_monto_en_cuotas(
                 plan_rows,
                 cuota_numero,
                 monto_distribuir,
@@ -775,6 +888,8 @@ class PagoSerializer(serializers.ModelSerializer):
                     }
                     if linea.get('abono_capital'):
                         item['abono_capital'] = True
+                        if linea.get('liquida_prestamo'):
+                            item['liquida_prestamo'] = True
                     else:
                         item['cuota'] = linea['numero_cuota']
                     if linea.get('parcial'):
@@ -797,6 +912,7 @@ class PagoSerializer(serializers.ModelSerializer):
                     id_prestamo=prestamo,
                     fecha_pago=fecha_pago,
                     cobrado_en=cobrado_en,
+                    registrado_por=actor,
                     documento=documento_principal,
                     capital=capital_total,
                     interes=interes_total,
@@ -805,6 +921,7 @@ class PagoSerializer(serializers.ModelSerializer):
                     monto_recibido_cliente=monto_recibido_cliente,
                     detalle_distribucion=detalle_factura,
                 )
+                _asignar_factura_sar_al_pago(pago_unico)
                 self._sync_prestamo_state(prestamo, pago_unico)
                 return pago_unico
 
@@ -822,8 +939,11 @@ class PagoSerializer(serializers.ModelSerializer):
             validated_data['monto_recibido_cliente'] = monto_recibido_cliente
 
         validated_data['cobrado_en'] = cobrado_en
+        if actor is not None:
+            validated_data['registrado_por'] = actor
 
         pago = super().create(validated_data)
+        _asignar_factura_sar_al_pago(pago)
         self.distribucion_resumen = None
         self._sync_prestamo_state(pago.id_prestamo, pago)
         return pago
@@ -990,4 +1110,95 @@ class ContratoPrestamoSerializer(serializers.ModelSerializer):
 
         return value
 
+
+class ConfiguracionFacturacionSerializer(serializers.ModelSerializer):
+    """Configuracion fiscal SAR (singleton pk=1)."""
+
+    rango_autorizado_texto = serializers.SerializerMethodField(read_only=True)
+    numero_ejemplo = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = ConfiguracionFacturacion
+        fields = (
+            'id',
+            'razon_social',
+            'nombre_comercial',
+            'rtn',
+            'direccion',
+            'ciudad',
+            'telefono',
+            'correo',
+            'cai',
+            'fecha_limite_emision',
+            'establecimiento',
+            'punto_emision',
+            'tipo_documento',
+            'correlativo_desde',
+            'correlativo_hasta',
+            'correlativo_actual',
+            'usar_numeracion_sar',
+            'formato_ticket',
+            'aplicar_isv',
+            'porcentaje_isv',
+            'leyenda_exento',
+            'leyenda_pie',
+            'actualizado_en',
+            'rango_autorizado_texto',
+            'numero_ejemplo',
+        )
+        read_only_fields = ('id', 'actualizado_en', 'rango_autorizado_texto', 'numero_ejemplo')
+
+    def validate_rtn(self, value: str) -> str:
+        if not (value or '').strip():
+            return ''
+        try:
+            return normalizar_rtn_hn_opcional(value) or ''
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc)) from exc
+
+    def get_rango_autorizado_texto(self, obj: ConfiguracionFacturacion) -> str:
+        return texto_rango_autorizado(obj)
+
+    def get_numero_ejemplo(self, obj: ConfiguracionFacturacion) -> str:
+        return formatear_numero_factura_sar(
+            obj.establecimiento,
+            obj.punto_emision,
+            obj.tipo_documento,
+            obj.correlativo_actual,
+        )
+
+    def validate(self, attrs):
+        desde = attrs.get('correlativo_desde', getattr(self.instance, 'correlativo_desde', 1))
+        hasta = attrs.get('correlativo_hasta', getattr(self.instance, 'correlativo_hasta', 1))
+        actual = attrs.get('correlativo_actual', getattr(self.instance, 'correlativo_actual', 1))
+        if hasta < desde:
+            raise serializers.ValidationError(
+                {'correlativo_hasta': 'El correlativo final debe ser mayor o igual al inicial.'},
+            )
+        if not (desde <= actual <= hasta):
+            raise serializers.ValidationError(
+                {'correlativo_actual': 'El correlativo actual debe estar dentro del rango autorizado.'},
+            )
+        for field_name in ('establecimiento', 'punto_emision'):
+            value = str(attrs.get(field_name, getattr(self.instance, field_name, '001'))).strip()
+            if not value.isdigit() or len(value) > 3:
+                raise serializers.ValidationError(
+                    {field_name: 'Use hasta 3 digitos numericos (ej. 001).'},
+                )
+        tipo = str(attrs.get('tipo_documento', getattr(self.instance, 'tipo_documento', '01'))).strip()
+        if not tipo.isdigit() or len(tipo) > 2:
+            raise serializers.ValidationError(
+                {'tipo_documento': 'Use hasta 2 digitos numericos (01 = factura).'},
+            )
+        pct = attrs.get('porcentaje_isv', getattr(self.instance, 'porcentaje_isv', Decimal('15')))
+        if pct is not None and pct < 0:
+            raise serializers.ValidationError({'porcentaje_isv': 'El porcentaje de ISV no puede ser negativo.'})
+        return attrs
+
+
+def _asignar_factura_sar_al_pago(pago: Pago) -> None:
+    try:
+        asignar_numero_factura_sar(pago)
+    except ErrorFacturacionSAR as exc:
+        raise serializers.ValidationError({'detail': str(exc)}) from exc
 
