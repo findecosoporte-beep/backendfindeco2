@@ -52,7 +52,7 @@ from .core.fechas_display import (
 from .core.findeco_brand import dibujar_logo_ticket
 from .core.facturacion_sar import obtener_configuracion_facturacion, texto_rango_autorizado
 from .core.money import round_money
-from .core.reporte_saldos import saldos_reporte_integracion
+from .core.reporte_saldos import monto_cuota_programada, saldos_reporte_integracion
 from .core.prestamo_calc import (
     annual_rate_from_nominal,
     frecuencia_anual,
@@ -1171,6 +1171,11 @@ def _fila_reporte_integracion(
         'cuota_siguiente_capital': None,
         'cuota_siguiente_interes': None,
         'cuota_siguiente_saldo_capital': None,
+        'cuota_siguiente_monto_programado': None,
+        'cuota_siguiente_abonado': None,
+        'cuota_anterior_numero': None,
+        'cuota_anterior_abonado': None,
+        'total_abono_anterior_mas_cuota': None,
         'cuotas_atrasadas': len(cuotas_atrasadas_nums),
         'cuotas_atrasadas_numeros': (
             ', '.join(str(n) for n in cuotas_atrasadas_nums) if cuotas_atrasadas_nums else ''
@@ -1181,6 +1186,20 @@ def _fila_reporte_integracion(
             siguiente,
             abonado_cuota.get(siguiente.numero_cuota, Decimal('0.00')),
         )
+        monto_prog_sig = round_money(monto_cuota_programada(siguiente))
+        abonado_en_sig = round_money(
+            abonado_cuota.get(siguiente.numero_cuota, Decimal('0.00'))
+        )
+        abono_anterior = Decimal('0.00')
+        num_anterior = None
+        if siguiente.numero_cuota > 1:
+            num_anterior = siguiente.numero_cuota - 1
+            abono_anterior = round_money(
+                abonado_cuota.get(num_anterior, Decimal('0.00'))
+            )
+        else:
+            abono_anterior = abonado_en_sig
+
         sig_fields.update(
             {
                 'cuota_siguiente_numero': siguiente.numero_cuota,
@@ -1190,6 +1209,15 @@ def _fila_reporte_integracion(
                 'cuota_siguiente_interes': str(round_money(Decimal(siguiente.interes_programado))),
                 'cuota_siguiente_saldo_capital': str(
                     round_money(Decimal(siguiente.saldo_capital_programado))
+                ),
+                'cuota_siguiente_monto_programado': str(monto_prog_sig),
+                'cuota_siguiente_abonado': str(abonado_en_sig),
+                'cuota_anterior_numero': num_anterior,
+                'cuota_anterior_abonado': (
+                    str(abono_anterior) if siguiente.numero_cuota > 1 else None
+                ),
+                'total_abono_anterior_mas_cuota': str(
+                    round_money(abono_anterior + monto_prog_sig)
                 ),
             }
         )

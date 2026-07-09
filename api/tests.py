@@ -589,8 +589,17 @@ class RolePermissionIntegrationTestCase(APITestCase):
         fila = filas[0]
         self.assertEqual(Decimal(fila['saldo_inicial']), Decimal('11500.00'))
         self.assertEqual(Decimal(fila['saldo_actual']), Decimal('9500.00'))
+        abono_cuota_2 = Decimal('2000.00') - cuota_1.total_programado
+        pendiente_cuota_2 = cuota_2.total_programado - abono_cuota_2
         self.assertEqual(fila['cuota_siguiente_numero'], 2)
-        self.assertEqual(Decimal(fila['cuota_siguiente_monto']), cuota_2.total_programado)
+        self.assertEqual(Decimal(fila['cuota_siguiente_monto']), pendiente_cuota_2)
+        self.assertEqual(Decimal(fila['cuota_siguiente_abonado']), abono_cuota_2)
+        self.assertEqual(Decimal(fila['cuota_anterior_numero']), 1)
+        self.assertEqual(Decimal(fila['cuota_anterior_abonado']), cuota_1.total_programado)
+        self.assertEqual(
+            Decimal(fila['total_abono_anterior_mas_cuota']),
+            cuota_1.total_programado + cuota_2.total_programado,
+        )
         self.assertEqual(Decimal(pagos.last().saldo), Decimal('9500.00'))
 
     def test_pago_unico_liquida_prestamo_completo_marca_todas_las_cuotas(self):
@@ -781,6 +790,12 @@ class RolePermissionIntegrationTestCase(APITestCase):
         fila = reporte.data['filas'][0]
         self.assertEqual(fila['cuota_siguiente_numero'], 1)
         self.assertEqual(Decimal(fila['cuota_siguiente_monto']), pendiente_cuota_1)
+        self.assertEqual(Decimal(fila['cuota_siguiente_abonado']), abono_parcial)
+        self.assertEqual(Decimal(fila['cuota_siguiente_monto_programado']), cuota_1.total_programado)
+        self.assertEqual(
+            Decimal(fila['total_abono_anterior_mas_cuota']),
+            abono_parcial + cuota_1.total_programado,
+        )
         self.assertGreater(Decimal(pago.saldo), Decimal('0.00'))
 
     def test_historial_pagos_cobros_por_dia(self):
