@@ -33,6 +33,7 @@ from .clientes_excel import (
     generar_plantilla_clientes_xlsx,
     importar_clientes_xlsx,
 )
+from .estado_cuenta_export import exportar_estado_cuenta_pdf, recolectar_datos_estado_cuenta
 from .facturas_contabilidad import recolectar_facturas_contabilidad
 from .historial_pagos_export import (
     exportar_historial_pagos_pdf,
