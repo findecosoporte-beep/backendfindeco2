@@ -418,6 +418,13 @@ def recolectar_datos_estado_cuenta(prestamo: Prestamo) -> dict:
             }
         )
 
+    tot_abonos_capital = round_money(sum((Decimal(f['capital']) for f in filas_abonos), Decimal('0.00')))
+    tot_abonos_interes = round_money(sum((Decimal(f['interes']) for f in filas_abonos), Decimal('0.00')))
+    tot_abonos_total = round_money(sum((Decimal(f['total']) for f in filas_abonos), Decimal('0.00')))
+    tot_abonos_saldo = (
+        round_money(Decimal(filas_abonos[-1]['saldo_capital'])) if filas_abonos else round_money(Decimal(prestamo.monto))
+    )
+
     cuotas_pendientes = [f for f in filas_cuotas if f['estado'] == 'Pendiente']
     cuotas_pagadas = [f for f in filas_cuotas if f['estado'] == 'Pagada']
 
@@ -516,6 +523,12 @@ def recolectar_datos_estado_cuenta(prestamo: Prestamo) -> dict:
         'cuotas_pendientes': cuotas_pendientes,
         'cuotas_pagadas': cuotas_pagadas,
         'abonos': filas_abonos,
+        'abonos_totales': {
+            'capital': str(tot_abonos_capital),
+            'interes': str(tot_abonos_interes),
+            'total': str(tot_abonos_total),
+            'saldo_capital': str(tot_abonos_saldo),
+        },
         'abonos_capital': [],
         'historial_prestamos': historial_filas,
         'resumen': {
@@ -769,6 +782,7 @@ def exportar_estado_cuenta_pdf(datos: dict) -> bytes:
     )
 
     abonos_filas = datos.get('abonos') or []
+    abonos_totales = datos.get('abonos_totales') or {}
     abonos_data = [
         [
             str(f.get('n', '')),
@@ -781,12 +795,25 @@ def exportar_estado_cuenta_pdf(datos: dict) -> bytes:
         ]
         for f in abonos_filas
     ]
+    if abonos_data:
+        abonos_data.append(
+            [
+                'TOTAL',
+                '—',
+                'Abonado',
+                _money_plain(abonos_totales.get('capital', '0')),
+                _money_plain(abonos_totales.get('interes', '0')),
+                _money_plain(abonos_totales.get('total', '0')),
+                _money_plain(abonos_totales.get('saldo_capital', '0')),
+            ]
+        )
     _tabla_seccion(
         'Abonos',
         ['N', 'Fecha', 'Documento', 'Capital', 'Interés', 'Total', 'Saldo capital'],
         abonos_data,
         col_ratios=[7, 14, 18, 14, 14, 14, 16],
         align_right_cols=[3, 4, 5, 6],
+        resaltar_ultima=bool(abonos_data),
     )
 
     historial_filas = datos.get('historial_prestamos') or []
