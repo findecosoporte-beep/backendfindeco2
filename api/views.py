@@ -9,7 +9,7 @@ from decimal import Decimal
 from django.contrib.auth import get_user_model
 from django.core.paginator import Paginator
 from django.db import IntegrityError, transaction
-from django.db.models import Count, F, Sum
+from django.db.models import Count, F, Q, Sum
 from django.db.models.functions import ExtractMonth, ExtractWeekDay
 from django.http import HttpResponse
 from django.utils.dateparse import parse_date
@@ -787,8 +787,20 @@ class ClienteViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         qs = Cliente.objects.all()
+        id_cartera_raw = (self.request.query_params.get('id_cartera') or '').strip()
+        if self.action == 'list' and id_cartera_raw.isdigit():
+            id_cartera = int(id_cartera_raw)
+            cartera = Cartera.objects.filter(pk=id_cartera).only('dia_cobro').first()
+            if cartera is None:
+                qs = qs.none()
+            else:
+                # Clientes de la cartera: préstamos en esa cartera o mismo día de cobro.
+                qs = qs.filter(
+                    Q(prestamo__id_cartera_id=id_cartera)
+                    | Q(dia_cobro_semanal=cartera.dia_cobro),
+                ).distinct()
         if self.action == 'list':
-            qs = qs.annotate(prestamos_count=Count('prestamo'))
+            qs = qs.annotate(prestamos_count=Count('prestamo', distinct=True))
         return qs
 
     @action(detail=False, methods=['get'], url_path='exportar-excel')

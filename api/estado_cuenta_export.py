@@ -18,12 +18,12 @@ from .core.cuotas import extract_cuota_numero_from_documento
 from .core.distribucion_pago import cuotas_cubiertas_por_pago_acumulado, pendiente_cuota, total_abonado_prestamo
 from .core.movimientos_pago import (
     abonado_por_cuota_desde_movimientos,
-    abonos_capital_desde_pagos,
     cuota_pago_desde_movimientos,
 )
 from .core.fechas_display import ahora_local_iso, cobrado_en_efectivo, formato_fecha_hn, formato_fecha_hora_hn, formato_hora_hn
 from .core.findeco_brand import platypus_logo_findeco
 from .core.money import round_money
+from .core.prestamo_calc import plan_totales_desde_condiciones
 from .core.reporte_saldos import monto_cuota_programada
 from .models import Pago, Prestamo, PrestamoCuota
 
@@ -298,7 +298,6 @@ def recolectar_datos_estado_cuenta(prestamo: Prestamo) -> dict:
     )
     pago_map = pago_por_cuota_con_fallback(cuotas, pagos)
     abonado_por_cuota = abonado_por_cuota_desde_movimientos(pagos)
-    abonos_capital = abonos_capital_desde_pagos(pagos)
 
     # Cuotas cubiertas por el acumulado total pagado (aunque el excedente haya
     # quedado como abono a capital y no como "Cuota N" de cada una): el cliente
@@ -308,10 +307,21 @@ def recolectar_datos_estado_cuenta(prestamo: Prestamo) -> dict:
     ultimo_pago = pagos[-1] if pagos else None
 
     filas_cuotas = []
+    tot_plan_capital = Decimal('0.00')
+    tot_plan_interes = Decimal('0.00')
+    tot_plan_total = Decimal('0.00')
+    tot_plan_saldo = Decimal('0.00')
     for cuota in cuotas:
         pago = pago_map.get(cuota.numero_cuota)
         abonado_cuota = abonado_por_cuota.get(cuota.numero_cuota, Decimal('0.00'))
         total_cuota = monto_cuota_programada(cuota)
+        capital = round_money(Decimal(cuota.capital_programado))
+        interes = round_money(Decimal(cuota.interes_programado))
+        saldo_cap = round_money(Decimal(cuota.saldo_capital_programado))
+        tot_plan_capital += capital
+        tot_plan_interes += interes
+        tot_plan_total += total_cuota
+        tot_plan_saldo += saldo_cap
         if pago is not None or abonado_cuota >= total_cuota - Decimal('0.01'):
             estado = 'Pagada'
             ref_pago = pago or ultimo_pago
@@ -332,8 +342,10 @@ def recolectar_datos_estado_cuenta(prestamo: Prestamo) -> dict:
             {
                 'numero_cuota': cuota.numero_cuota,
                 'fecha_programada': cuota.fecha_programada.isoformat(),
-                'total_programado': str(round_money(monto_cuota_programada(cuota))),
-                'saldo_capital': str(round_money(cuota.saldo_capital_programado)),
+                'capital_programado': str(capital),
+                'interes_programado': str(interes),
+                'total_programado': str(round_money(total_cuota)),
+                'saldo_capital': str(saldo_cap),
                 'estado': estado,
                 'fecha_pago': fecha_pago_val,
                 'fecha_cancelo': fecha_pago_val,
@@ -349,17 +361,21 @@ def recolectar_datos_estado_cuenta(prestamo: Prestamo) -> dict:
         tot_interes += Decimal(pago.interes)
     total_abonado = round_money(tot_capital + tot_interes)
 
-    pago_por_id = {p.id_pago: p for p in pagos}
-    filas_abonos_capital = []
-    for fila in abonos_capital:
-        pago_ref = pago_por_id.get(fila.get('id_pago'))
-        filas_abonos_capital.append(
+    filas_abonos = []
+    for idx, pago in enumerate(pagos, start=1):
+        capital = round_money(Decimal(pago.capital))
+        interes = round_money(Decimal(pago.interes))
+        mora = round_money(Decimal(pago.mora or 0))
+        filas_abonos.append(
             {
-                'fecha_pago': fila.get('fecha_pago') or '',
-                'hora_pago': formato_hora_hn(cobrado_en_efectivo(pago_ref)) if pago_ref else '',
-                'monto': fila.get('total') or '0',
-                'documento': fila.get('documento') or 'Abono a capital',
-                'id_pago': fila.get('id_pago'),
+                'n': idx,
+                'fecha_pago': pago.fecha_pago.isoformat(),
+                'documento': (pago.documento or '').strip() or f'Pago {pago.id_pago}',
+                'capital': str(capital),
+                'interes': str(interes),
+                'total': str(round_money(capital + interes + mora)),
+                'saldo_capital': str(round_money(Decimal(pago.saldo))),
+                'id_pago': pago.id_pago,
             }
         )
 
@@ -371,6 +387,50 @@ def recolectar_datos_estado_cuenta(prestamo: Prestamo) -> dict:
     asesor_txt = (prestamo.asesor or '').strip() or (getattr(usuario, 'nombre', None) or '').strip()
     telefono = ((cliente.telefono if cliente else '') or '').strip()
     resumen_saldos = _calcular_resumen_saldos(cuotas, pagos, filas_cuotas, abonado_por_cuota)
+
+    historial_filas = []
+    if cliente is not None:
+        prestamos_cliente = list(
+            Prestamo.objects.filter(id_cliente=cliente).order_by('-fecha_entrega', '-id_prestamo'),
+        )
+        saldos_por_id: dict[int, Decimal] = {}
+        for p in prestamos_cliente:
+            ult = (
+                Pago.objects.filter(id_prestamo=p, anulado=False)
+                .order_by('-fecha_pago', '-id_pago')
+                .only('saldo')
+                .first()
+            )
+            if p.estado in ('pagado', 'cancelado'):
+                saldos_por_id[p.id_prestamo] = Decimal('0.00')
+            elif ult is not None:
+                saldos_por_id[p.id_prestamo] = round_money(Decimal(ult.saldo))
+            else:
+                saldos_por_id[p.id_prestamo] = round_money(Decimal(p.monto))
+
+        for p in prestamos_cliente:
+            monto = round_money(Decimal(p.monto))
+            tasa = Decimal(p.tasa_interes)
+            plazo = int(p.plazo or 0)
+            forma = p.forma_pago or 'mensual'
+            if plazo > 0 and monto > 0:
+                total_plan, _ = plan_totales_desde_condiciones(monto, plazo, forma, tasa)
+                interes_hist = round_money(total_plan - monto)
+            else:
+                interes_hist = Decimal('0.00')
+            historial_filas.append(
+                {
+                    'id_prestamo': p.id_prestamo,
+                    'prestamo': (p.numero_prestamo or '').strip() or str(p.id_prestamo),
+                    'monto': str(monto),
+                    'interes': str(interes_hist),
+                    'plazo': plazo,
+                    'tasa': str(round_money(tasa)),
+                    'producto': (p.producto or '').strip() or '—',
+                    'saldo': str(saldos_por_id.get(p.id_prestamo, monto)),
+                    'estado': p.estado,
+                }
+            )
 
     ficha = {
         'cliente': f'{cliente.id_cliente} — {cliente.nombre}' if cliente else '',
@@ -404,9 +464,18 @@ def recolectar_datos_estado_cuenta(prestamo: Prestamo) -> dict:
         'ficha': ficha,
         'resumen_saldos': resumen_saldos,
         'cuotas': filas_cuotas,
+        'plan_pagos': filas_cuotas,
+        'plan_pagos_totales': {
+            'capital': str(round_money(tot_plan_capital)),
+            'interes': str(round_money(tot_plan_interes)),
+            'total': str(round_money(tot_plan_total)),
+            'saldo_capital': str(round_money(tot_plan_saldo)),
+        },
         'cuotas_pendientes': cuotas_pendientes,
         'cuotas_pagadas': cuotas_pagadas,
-        'abonos_capital': filas_abonos_capital,
+        'abonos': filas_abonos,
+        'abonos_capital': [],
+        'historial_prestamos': historial_filas,
         'resumen': {
             'cuotas_pagadas': len(cuotas_pagadas),
             'cuotas_pendientes': len(cuotas_pendientes),
@@ -596,51 +665,107 @@ def exportar_estado_cuenta_pdf(datos: dict) -> bytes:
     tabla_saldos.setStyle(estilo_saldos)
     story.append(tabla_saldos)
 
-    def _tabla_cuotas(titulo: str, headers: list[str], filas: list[dict], row_builder) -> None:
+    def _tabla_seccion(
+        titulo: str,
+        headers: list[str],
+        filas: list[list[str]],
+        *,
+        col_ratios: list[float],
+        align_right_cols: list[int] | None = None,
+        resaltar_ultima: bool = False,
+    ) -> None:
         story.append(Paragraph(titulo, section_style))
         if not filas:
             story.append(Paragraph('Sin registros.', meta_style))
             return
-        data = [headers]
-        for fila in filas:
-            data.append(row_builder(fila))
-        ratios = [8, 18, 18, 14, 16, 14, 12][: len(headers)]
-        total_ratio = sum(ratios)
-        widths = [ancho_tabla * r / total_ratio for r in ratios]
+        data = [headers] + filas
+        total_ratio = sum(col_ratios)
+        widths = [ancho_tabla * r / total_ratio for r in col_ratios]
         tabla = Table(data, colWidths=widths, repeatRows=1)
         estilo = _estilo_tabla_datos()
-        estilo.add('ALIGN', (0, 1), (0, -1), 'CENTER')
-        if len(headers) >= 4:
-            estilo.add('ALIGN', (3, 0), (-1, -1), 'RIGHT')
+        estilo.add('ALIGN', (0, 1), (-1, -1), 'CENTER')
+        for col in align_right_cols or []:
+            estilo.add('ALIGN', (col, 0), (col, -1), 'RIGHT')
+        if resaltar_ultima and len(data) > 1:
+            last = len(data) - 1
+            estilo.add('FONTNAME', (0, last), (-1, last), 'Helvetica-Bold')
+            estilo.add('BACKGROUND', (0, last), (-1, last), colors.Color(0.94, 0.96, 0.98))
         tabla.setStyle(estilo)
         story.append(tabla)
 
-    _tabla_cuotas(
-        'Cuotas pendientes',
-        ['N', 'Fecha programada', 'Fecha canceló', 'Cuota', 'Saldo', 'Estado'],
-        datos.get('cuotas_pendientes', []),
-        lambda f: [
+    plan_filas = datos.get('plan_pagos') or datos.get('cuotas') or []
+    plan_totales = datos.get('plan_pagos_totales') or {}
+    plan_data = [
+        [
             str(f.get('numero_cuota', '')),
             _format_fecha(f.get('fecha_programada')),
-            '—',
+            _money_plain(f.get('capital_programado', '0')),
+            _money_plain(f.get('interes_programado', '0')),
             _money_plain(f.get('total_programado', '0')),
             _money_plain(f.get('saldo_capital', '0')),
-            'Pendiente',
-        ],
+        ]
+        for f in plan_filas
+    ]
+    if plan_data:
+        plan_data.append(
+            [
+                'TOTAL',
+                '—',
+                _money_plain(plan_totales.get('capital', '0')),
+                _money_plain(plan_totales.get('interes', '0')),
+                _money_plain(plan_totales.get('total', '0')),
+                _money_plain(plan_totales.get('saldo_capital', '0')),
+            ]
+        )
+    _tabla_seccion(
+        'Plan de pagos',
+        ['N', 'Fecha programada', 'Capital', 'Interés', 'Total cuota + interés', 'Saldo capital'],
+        plan_data,
+        col_ratios=[8, 16, 16, 16, 22, 18],
+        align_right_cols=[2, 3, 4, 5],
+        resaltar_ultima=bool(plan_data),
     )
 
-    _tabla_cuotas(
-        'Cuotas pagadas',
-        ['N', 'Fecha programada', 'Fecha canceló', 'Hora', 'Cuota', 'Documento'],
-        datos.get('cuotas_pagadas', []),
-        lambda f: [
-            str(f.get('numero_cuota', '')),
-            _format_fecha(f.get('fecha_programada')),
-            _format_fecha(f.get('fecha_cancelo') or f.get('fecha_pago') or None),
-            f.get('hora_pago') or '—',
-            _money_plain(f.get('total_programado', '0')),
-            f.get('documento') or f"Cuota {f.get('numero_cuota', '')}",
-        ],
+    abonos_filas = datos.get('abonos') or []
+    abonos_data = [
+        [
+            str(f.get('n', '')),
+            _format_fecha(f.get('fecha_pago')),
+            str(f.get('documento') or '—'),
+            _money_plain(f.get('capital', '0')),
+            _money_plain(f.get('interes', '0')),
+            _money_plain(f.get('total', '0')),
+            _money_plain(f.get('saldo_capital', '0')),
+        ]
+        for f in abonos_filas
+    ]
+    _tabla_seccion(
+        'Abonos',
+        ['N', 'Fecha', 'Documento', 'Capital', 'Interés', 'Total', 'Saldo capital'],
+        abonos_data,
+        col_ratios=[7, 14, 18, 14, 14, 14, 16],
+        align_right_cols=[3, 4, 5, 6],
+    )
+
+    historial_filas = datos.get('historial_prestamos') or []
+    historial_data = [
+        [
+            str(f.get('prestamo') or '—'),
+            _money_plain(f.get('monto', '0')),
+            _money_plain(f.get('interes', '0')),
+            str(f.get('plazo') if f.get('plazo') is not None else '—'),
+            f"{f.get('tasa', '0')}%",
+            str(f.get('producto') or '—'),
+            _money_plain(f.get('saldo', '0')),
+        ]
+        for f in historial_filas
+    ]
+    _tabla_seccion(
+        'Historial de préstamos',
+        ['Préstamo', 'Monto', 'Interés', 'Plazo', 'Tasa', 'Producto', 'Saldo'],
+        historial_data,
+        col_ratios=[14, 14, 14, 10, 10, 18, 14],
+        align_right_cols=[1, 2, 6],
     )
 
     doc.build(story)
