@@ -336,7 +336,7 @@ def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
         wrap_center(config.ciudad.strip(), body_sm, False, 3.5)
     center_text(f'RTN: {config.rtn.strip() or "—"}', body, False, 4.4)
 
-    center_text('RECIBO DE PAGO', title, True, 4.6)
+    center_text('RECIBO DE INGRESOS', title, True, 4.6)
     if config.cai.strip():
         center_text('FACTURA / COMPROBANTE SAR', body_sm, True, 3.8)
 
