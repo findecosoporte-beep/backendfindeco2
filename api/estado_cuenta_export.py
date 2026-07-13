@@ -259,6 +259,37 @@ def _estilo_tabla_datos() -> TableStyle:
     )
 
 
+def _etiqueta_documento_abono(pago: Pago) -> str:
+    detalle = pago.detalle_distribucion or []
+    if isinstance(detalle, list) and detalle:
+        partes: list[str] = []
+        for linea in detalle:
+            if not isinstance(linea, dict):
+                continue
+            if linea.get('abono_capital'):
+                partes.append(
+                    'Abono a capital (liquida)'
+                    if linea.get('liquida_prestamo')
+                    else 'Abono a capital'
+                )
+                continue
+            cuota = linea.get('cuota')
+            if cuota is None:
+                continue
+            base = f'Cuota {cuota}'
+            partes.append(f'{base} (parcial)' if linea.get('parcial') else base)
+        unicas: list[str] = []
+        vistos: set[str] = set()
+        for p in partes:
+            if p not in vistos:
+                vistos.add(p)
+                unicas.append(p)
+        if unicas:
+            return ', '.join(unicas)
+    doc = (pago.documento or '').strip()
+    return doc or f'Pago {pago.id_pago}'
+
+
 def pago_por_cuota_con_fallback(cuotas: list[PrestamoCuota], pagos_ordenados: list[Pago]) -> dict[int, Pago]:
     """Asigna pagos a cuotas usando movimientos tipo cuota."""
     mapa_refs = cuota_pago_desde_movimientos(pagos_ordenados)
@@ -310,7 +341,6 @@ def recolectar_datos_estado_cuenta(prestamo: Prestamo) -> dict:
     tot_plan_capital = Decimal('0.00')
     tot_plan_interes = Decimal('0.00')
     tot_plan_total = Decimal('0.00')
-    tot_plan_saldo = Decimal('0.00')
     for cuota in cuotas:
         pago = pago_map.get(cuota.numero_cuota)
         abonado_cuota = abonado_por_cuota.get(cuota.numero_cuota, Decimal('0.00'))
@@ -321,7 +351,6 @@ def recolectar_datos_estado_cuenta(prestamo: Prestamo) -> dict:
         tot_plan_capital += capital
         tot_plan_interes += interes
         tot_plan_total += total_cuota
-        tot_plan_saldo += saldo_cap
         if pago is not None or abonado_cuota >= total_cuota - Decimal('0.01'):
             estado = 'Pagada'
             ref_pago = pago or ultimo_pago
@@ -362,19 +391,29 @@ def recolectar_datos_estado_cuenta(prestamo: Prestamo) -> dict:
     total_abonado = round_money(tot_capital + tot_interes)
 
     filas_abonos = []
+    saldo_cap_corrido = round_money(Decimal(prestamo.monto))
+    conteo_documento: dict[str, int] = {}
     for idx, pago in enumerate(pagos, start=1):
         capital = round_money(Decimal(pago.capital))
         interes = round_money(Decimal(pago.interes))
         mora = round_money(Decimal(pago.mora or 0))
+        saldo_cap_corrido = round_money(max(Decimal('0.00'), saldo_cap_corrido - capital))
+        documento = _etiqueta_documento_abono(pago)
+        clave = documento.lower()
+        visto = conteo_documento.get(clave, 0) + 1
+        conteo_documento[clave] = visto
+        detalle = pago.detalle_distribucion or []
+        if visto > 1 and not (isinstance(detalle, list) and len(detalle) > 0):
+            documento = f'{documento} ({visto})'
         filas_abonos.append(
             {
                 'n': idx,
                 'fecha_pago': pago.fecha_pago.isoformat(),
-                'documento': (pago.documento or '').strip() or f'Pago {pago.id_pago}',
+                'documento': documento,
                 'capital': str(capital),
                 'interes': str(interes),
                 'total': str(round_money(capital + interes + mora)),
-                'saldo_capital': str(round_money(Decimal(pago.saldo))),
+                'saldo_capital': str(saldo_cap_corrido),
                 'id_pago': pago.id_pago,
             }
         )
@@ -469,7 +508,10 @@ def recolectar_datos_estado_cuenta(prestamo: Prestamo) -> dict:
             'capital': str(round_money(tot_plan_capital)),
             'interes': str(round_money(tot_plan_interes)),
             'total': str(round_money(tot_plan_total)),
-            'saldo_capital': str(round_money(tot_plan_saldo)),
+            # Último saldo capital programado (no suma de saldos intermedios).
+            'saldo_capital': str(
+                round_money(Decimal(filas_cuotas[-1]['saldo_capital'])) if filas_cuotas else Decimal('0.00')
+            ),
         },
         'cuotas_pendientes': cuotas_pendientes,
         'cuotas_pagadas': cuotas_pagadas,
