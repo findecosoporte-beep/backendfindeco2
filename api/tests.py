@@ -995,6 +995,98 @@ class RolePermissionIntegrationTestCase(APITestCase):
         self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
         self.assertFalse(Pago.objects.get(pk=id_pago).anulado)
 
+    def test_supervisor_eliminar_forzado_anula_cobros_y_borra_prestamo(self):
+        """Eliminar forzado anula cobros vigentes y borra el préstamo con sus pagos."""
+        self._auth_with_role(role='supervisor', email='elim.forzado@test.com')
+        cliente = Cliente.objects.create(nombre='Cliente Elim Forzado', dni='0801-2000-00028')
+        cartera = Cartera.objects.create(nombre='Cartera Elim Forzado', dia_cobro='lunes')
+        usuario_operativo = Usuario.objects.get(correo='elim.forzado@test.com')
+        self.client.post(
+            '/api/v1/prestamos/',
+            data={
+                'numero_prestamo': 'PRE-ELIMF-001',
+                'id_cliente': cliente.id_cliente,
+                'id_usuario': usuario_operativo.id_usuario,
+                'id_cartera': cartera.id_cartera,
+                'monto': '2000.00',
+                'plazo': 2,
+                'tasa_interes': '10.00',
+                'estado': 'activo',
+                'forma_pago': 'mensual',
+                'forma_desembolso': 'efectivo',
+                'comision': '0.00',
+                'fecha_entrega': date.today().isoformat(),
+            },
+            format='json',
+        )
+        prestamo = Prestamo.objects.get(numero_prestamo='PRE-ELIMF-001')
+        cuota = PrestamoCuota.objects.get(id_prestamo=prestamo, numero_cuota=1)
+        pago_resp = self.client.post(
+            '/api/v1/pagos/',
+            data={
+                'id_prestamo': prestamo.id_prestamo,
+                'fecha_pago': date.today().isoformat(),
+                'documento': 'Cuota 1',
+                'capital': str(cuota.capital_programado),
+                'interes': str(cuota.interes_programado),
+                'mora': '0.00',
+                'saldo': '0.00',
+                'monto_recibido': str(cuota.total_programado),
+            },
+            format='json',
+        )
+        self.assertEqual(pago_resp.status_code, status.HTTP_201_CREATED, pago_resp.data)
+        id_prestamo = prestamo.id_prestamo
+
+        bloqueado = self.client.delete(f'/api/v1/prestamos/{id_prestamo}/')
+        self.assertEqual(bloqueado.status_code, status.HTTP_400_BAD_REQUEST)
+
+        forzado = self.client.post(
+            f'/api/v1/prestamos/{id_prestamo}/eliminar-forzado/',
+            data={'motivo': 'Préstamo de prueba a eliminar'},
+            format='json',
+        )
+        self.assertEqual(forzado.status_code, status.HTTP_200_OK, forzado.data)
+        self.assertEqual(forzado.data['id_prestamo'], id_prestamo)
+        self.assertTrue(forzado.data['pagos_anulados'])
+        self.assertFalse(Prestamo.objects.filter(pk=id_prestamo).exists())
+        self.assertFalse(Pago.objects.filter(id_prestamo_id=id_prestamo).exists())
+
+    def test_asesor_no_puede_eliminar_forzado(self):
+        """Solo administrador o supervisor pueden usar eliminar-forzado."""
+        self._auth_with_role(role='supervisor', email='elim.forzado.setup@test.com')
+        cliente = Cliente.objects.create(nombre='Cliente Forzado 403', dni='0801-2000-00029')
+        cartera = Cartera.objects.create(nombre='Cartera Forzado 403', dia_cobro='lunes')
+        usuario_operativo = Usuario.objects.get(correo='elim.forzado.setup@test.com')
+        self.client.post(
+            '/api/v1/prestamos/',
+            data={
+                'numero_prestamo': 'PRE-ELIMF-403',
+                'id_cliente': cliente.id_cliente,
+                'id_usuario': usuario_operativo.id_usuario,
+                'id_cartera': cartera.id_cartera,
+                'monto': '1000.00',
+                'plazo': 1,
+                'tasa_interes': '10.00',
+                'estado': 'activo',
+                'forma_pago': 'mensual',
+                'forma_desembolso': 'efectivo',
+                'comision': '0.00',
+                'fecha_entrega': date.today().isoformat(),
+            },
+            format='json',
+        )
+        prestamo = Prestamo.objects.get(numero_prestamo='PRE-ELIMF-403')
+
+        self._auth_with_role(role='asesor', email='asesor.elimforzado@test.com')
+        resp = self.client.post(
+            f'/api/v1/prestamos/{prestamo.id_prestamo}/eliminar-forzado/',
+            data={'motivo': 'Sin permiso'},
+            format='json',
+        )
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertTrue(Prestamo.objects.filter(pk=prestamo.id_prestamo).exists())
+
     def test_reporte_integracion_incluye_pendiente_aprobacion_en_filtro_cobro(self):
         """La hoja de cobros debe listar préstamos nuevos (pendiente_aprobacion), no solo activos."""
         self._auth_with_role(role='supervisor', email='reporte.pendiente@test.com')

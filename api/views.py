@@ -1446,7 +1446,8 @@ class PrestamoViewSet(viewsets.ModelViewSet):
                 {
                     'detail': (
                         f'No se puede eliminar el préstamo: tiene {num_pagos} cobro(s) registrado(s). '
-                        'Anule los cobros antes de eliminar el préstamo.'
+                        'Use POST /prestamos/{id}/eliminar-forzado/ (administrador o supervisor) '
+                        'para anular los cobros y eliminar el préstamo, o anule cobros en Historial de pagos.'
                     ),
                 }
             )
@@ -1456,11 +1457,64 @@ class PrestamoViewSet(viewsets.ModelViewSet):
                 {
                     'detail': (
                         f'No se puede eliminar el préstamo: tiene {num_servicios} servicio(s) asociado(s). '
-                        'Elimine los servicios antes de borrar el préstamo.'
+                        'Use POST /prestamos/{id}/eliminar-forzado/ (administrador o supervisor) '
+                        'para eliminar servicios y el préstamo.'
                     ),
                 }
             )
         instance.delete()
+
+    @action(detail=True, methods=['post'], url_path='eliminar-forzado')
+    def eliminar_forzado(self, request, pk=None):
+        """Anula cobros vigentes, borra pagos/servicios y elimina el préstamo (irreversible)."""
+        actor = usuario_operativo_desde_request(request)
+        if actor is None or actor.rol not in WRITE_ANULAR_PAGOS:
+            return Response(
+                {'detail': 'Solo administrador o supervisor pueden eliminar un préstamo con cobros.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        motivo = (request.data.get('motivo') or '').strip()
+        if not motivo:
+            return Response(
+                {'motivo': 'Indique el motivo de la eliminación forzada.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        prestamo = self.get_object()
+        id_prestamo = prestamo.id_prestamo
+        numero = prestamo.numero_prestamo
+        pagos_anulados: list[int] = []
+
+        with transaction.atomic():
+            Prestamo.objects.select_for_update().filter(pk=id_prestamo).first()
+            while True:
+                pago = (
+                    filtrar_pagos_vigentes(Pago.objects.filter(id_prestamo_id=id_prestamo))
+                    .order_by('id_pago')
+                    .first()
+                )
+                if pago is None:
+                    break
+                grupo = anular_grupo_cobro(pago, actor, motivo)
+                pagos_anulados.extend(pg.id_pago for pg in grupo)
+
+            pagos_borrados, _ = Pago.objects.filter(id_prestamo_id=id_prestamo).delete()
+            servicios_borrados, _ = Servicio.objects.filter(id_prestamo_id=id_prestamo).delete()
+            prestamo.delete()
+
+        return Response(
+            {
+                'detail': 'Préstamo eliminado. Se anularon los cobros vigentes y se borraron pagos/servicios.',
+                'id_prestamo': id_prestamo,
+                'numero_prestamo': numero,
+                'pagos_anulados': pagos_anulados,
+                'pagos_borrados': pagos_borrados,
+                'servicios_borrados': servicios_borrados,
+                'motivo': motivo,
+            },
+            status=status.HTTP_200_OK,
+        )
 
     @action(detail=False, methods=['get'], url_path='reporte-integracion')
     def reporte_integracion(self, request):
