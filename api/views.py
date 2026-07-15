@@ -35,6 +35,7 @@ from .clientes_excel import (
 )
 from .estado_cuenta_export import exportar_estado_cuenta_pdf, recolectar_datos_estado_cuenta
 from .facturas_contabilidad import recolectar_facturas_contabilidad
+from .hoja_cobros_export import exportar_hoja_cobros_pdf, nombre_archivo_hoja_cobros
 from .historial_pagos_export import (
     exportar_historial_pagos_pdf,
     exportar_historial_pagos_xlsx,
@@ -1227,6 +1228,178 @@ def _fila_reporte_integracion(
     return row_data
 
 
+def _recolectar_reporte_integracion(viewset, request, *, force_all: bool = False) -> dict:
+    """Arma el payload de reporte-integracion (mismas filas/resumen que el listado JSON)."""
+    qs = viewset.get_queryset()
+
+    estado_param = (request.query_params.get('estado') or '').strip()
+    if estado_param:
+        lista = [e.strip() for e in estado_param.split(',') if e.strip()]
+        if lista:
+            qs = qs.filter(estado__in=lista)
+
+    zona_param = (request.query_params.get('id_zona') or '').strip()
+    if zona_param.isdigit():
+        qs = qs.filter(id_zona_id=int(zona_param))
+
+    cartera_param = (request.query_params.get('id_cartera') or '').strip()
+    if cartera_param.isdigit():
+        qs = qs.filter(id_cartera_id=int(cartera_param))
+
+    id_cliente_param = (request.query_params.get('id_cliente') or '').strip()
+    if id_cliente_param.isdigit():
+        qs = qs.filter(id_cliente_id=int(id_cliente_param))
+
+    id_prestamo_param = (request.query_params.get('id_prestamo') or '').strip()
+    if id_prestamo_param.isdigit():
+        qs = qs.filter(id_prestamo=int(id_prestamo_param))
+
+    fd = (request.query_params.get('fecha_entrega_desde') or '').strip()
+    if fd:
+        qs = qs.filter(fecha_entrega__gte=fd)
+    fh = (request.query_params.get('fecha_entrega_hasta') or '').strip()
+    if fh:
+        qs = qs.filter(fecha_entrega__lte=fh)
+
+    forma_pago_param = (request.query_params.get('forma_pago') or '').strip()
+    if forma_pago_param:
+        valid_forma = {'semanal', 'mensual', 'quincenal'}
+        if forma_pago_param in valid_forma:
+            qs = qs.filter(forma_pago=forma_pago_param)
+
+    prestamos_qs = qs.order_by('numero_prestamo')
+    ids = list(prestamos_qs.values_list('id_prestamo', flat=True))
+    fecha_reporte = timezone.localdate().isoformat()
+    generado_en = ahora_local_iso()
+
+    resumen_vacio = {
+        'clientes_distintos': 0,
+        'prestamos': 0,
+        'total_cuotas_plazo': 0,
+        'total_saldo_inicial': '0',
+        'total_saldo_actual': '0',
+        'total_cuota': '0',
+    }
+
+    if not ids:
+        all_rows_empty = force_all or (
+            (request.query_params.get('all') or '').strip().lower() in ('1', 'true', 'yes')
+        )
+        if all_rows_empty:
+            return {
+                'fecha_reporte': fecha_reporte,
+                'generado_en': generado_en,
+                'filas': [],
+                'resumen': resumen_vacio,
+                'all_rows': True,
+            }
+        return {
+            'fecha_reporte': fecha_reporte,
+            'generado_en': generado_en,
+            'filas': [],
+            'resumen': resumen_vacio,
+            'count': 0,
+            'page': 1,
+            'next': None,
+            'previous': None,
+            'all_rows': False,
+        }
+
+    (
+        primera_cuota,
+        cuotas_por_prestamo,
+        cuotas_pagadas_nums,
+        _ultimo_pago_por,
+        abonado_por_prestamo,
+        abonado_cuota_por_prestamo,
+    ) = _cargar_auxiliar_reporte_integracion(ids)
+
+    clientes_ids: set[int] = set()
+    sum_inicial = Decimal('0')
+    sum_cuota = Decimal('0')
+    sum_actual = Decimal('0')
+    sum_plazo = 0
+    for p in prestamos_qs.iterator(chunk_size=200):
+        clientes_ids.add(p.id_cliente_id)
+        plan_rows = cuotas_por_prestamo.get(p.id_prestamo, [])
+        paid_nums = cuotas_pagadas_nums.get(p.id_prestamo, set())
+        abonado_cuota = abonado_cuota_por_prestamo.get(p.id_prestamo, {})
+        saldo_inicial, cuota_pl, saldo_act = _montos_reporte_integracion(
+            p,
+            primera_cuota,
+            plan_rows,
+            paid_nums,
+            abonado_por_prestamo.get(p.id_prestamo, Decimal('0.00')),
+            abonado_por_cuota=abonado_cuota if plan_rows else None,
+        )
+        sum_inicial += saldo_inicial
+        sum_cuota += cuota_pl
+        sum_actual += saldo_act
+        sum_plazo += int(p.plazo or 0)
+
+    resumen = {
+        'clientes_distintos': len(clientes_ids),
+        'prestamos': len(ids),
+        'total_cuotas_plazo': sum_plazo,
+        'total_saldo_inicial': str(round_money(sum_inicial)),
+        'total_saldo_actual': str(round_money(sum_actual)),
+        'total_cuota': str(round_money(sum_cuota)),
+    }
+
+    all_rows = force_all or (
+        (request.query_params.get('all') or '').strip().lower() in ('1', 'true', 'yes')
+    )
+
+    def _build_filas(prestamos_page: list) -> list[dict]:
+        return [
+            _fila_reporte_integracion(
+                p,
+                primera_cuota,
+                cuotas_por_prestamo,
+                cuotas_pagadas_nums,
+                abonado_por_prestamo,
+                abonado_cuota_por_prestamo,
+            )
+            for p in prestamos_page
+        ]
+
+    if all_rows:
+        return {
+            'fecha_reporte': fecha_reporte,
+            'generado_en': generado_en,
+            'filas': _build_filas(list(prestamos_qs)),
+            'resumen': resumen,
+            'all_rows': True,
+        }
+
+    pagination = ReporteIntegracionPagination()
+    page_size = pagination.get_page_size(request) or pagination.page_size
+    paginator = Paginator(prestamos_qs, page_size)
+    page_number = request.query_params.get(pagination.page_query_param, 1)
+    page_obj = paginator.get_page(page_number)
+
+    payload = {
+        'fecha_reporte': fecha_reporte,
+        'generado_en': generado_en,
+        'count': paginator.count,
+        'page': page_obj.number,
+        'next': None,
+        'previous': None,
+        'filas': _build_filas(list(page_obj.object_list)),
+        'resumen': resumen,
+        'all_rows': False,
+    }
+    if page_obj.has_next():
+        q = request.query_params.copy()
+        q[pagination.page_query_param] = str(page_obj.next_page_number())
+        payload['next'] = request.build_absolute_uri(f'{request.path}?{q.urlencode()}')
+    if page_obj.has_previous():
+        q = request.query_params.copy()
+        q[pagination.page_query_param] = str(page_obj.previous_page_number())
+        payload['previous'] = request.build_absolute_uri(f'{request.path}?{q.urlencode()}')
+    return payload
+
+
 class PrestamoViewSet(viewsets.ModelViewSet):
     """CRUD de prestamos con filtros de negocio."""
 
@@ -1292,164 +1465,70 @@ class PrestamoViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'], url_path='reporte-integracion')
     def reporte_integracion(self, request):
         """Listado agregado tipo reporte de cartera: cuota planificada y saldo desde último pago."""
-        # Sin filter_queryset: django-filter espera estado=valor_único; aquí pasamos estado=a,b,c
-        # y produciría 400. Solo usamos queryset base del viewset + filtros manuales siguientes.
-        qs = self.get_queryset()
-
-        estado_param = (request.query_params.get('estado') or '').strip()
-        if estado_param:
-            lista = [e.strip() for e in estado_param.split(',') if e.strip()]
-            if lista:
-                qs = qs.filter(estado__in=lista)
-
-        zona_param = (request.query_params.get('id_zona') or '').strip()
-        if zona_param.isdigit():
-            qs = qs.filter(id_zona_id=int(zona_param))
-
-        cartera_param = (request.query_params.get('id_cartera') or '').strip()
-        if cartera_param.isdigit():
-            qs = qs.filter(id_cartera_id=int(cartera_param))
-
-        id_cliente_param = (request.query_params.get('id_cliente') or '').strip()
-        if id_cliente_param.isdigit():
-            qs = qs.filter(id_cliente_id=int(id_cliente_param))
-
-        id_prestamo_param = (request.query_params.get('id_prestamo') or '').strip()
-        if id_prestamo_param.isdigit():
-            qs = qs.filter(id_prestamo=int(id_prestamo_param))
-
-        fd = (request.query_params.get('fecha_entrega_desde') or '').strip()
-        if fd:
-            qs = qs.filter(fecha_entrega__gte=fd)
-        fh = (request.query_params.get('fecha_entrega_hasta') or '').strip()
-        if fh:
-            qs = qs.filter(fecha_entrega__lte=fh)
-
-        forma_pago_param = (request.query_params.get('forma_pago') or '').strip()
-        if forma_pago_param:
-            valid_forma = {'semanal', 'mensual', 'quincenal'}
-            if forma_pago_param in valid_forma:
-                qs = qs.filter(forma_pago=forma_pago_param)
-
-        prestamos_qs = qs.order_by('numero_prestamo')
-        ids = list(prestamos_qs.values_list('id_prestamo', flat=True))
-        fecha_reporte = timezone.localdate().isoformat()
-        generado_en = ahora_local_iso()
-
-        if not ids:
-            resumen_vacio = {
-                'clientes_distintos': 0,
-                'prestamos': 0,
-                'total_cuotas_plazo': 0,
-                'total_saldo_inicial': '0',
-                'total_saldo_actual': '0',
-                'total_cuota': '0',
+        datos = _recolectar_reporte_integracion(self, request)
+        if datos.get('all_rows'):
+            return Response(
+                {
+                    'fecha_reporte': datos['fecha_reporte'],
+                    'generado_en': datos['generado_en'],
+                    'filas': datos['filas'],
+                    'resumen': datos['resumen'],
+                }
+            )
+        return Response(
+            {
+                'fecha_reporte': datos['fecha_reporte'],
+                'generado_en': datos['generado_en'],
+                'count': datos.get('count', 0),
+                'page': datos.get('page', 1),
+                'next': datos.get('next'),
+                'previous': datos.get('previous'),
+                'filas': datos['filas'],
+                'resumen': datos['resumen'],
             }
+        )
+
+    @action(detail=False, methods=['get'], url_path='hoja-cobros-pdf')
+    def hoja_cobros_pdf(self, request):
+        """Descarga PDF con el listado completo de la hoja de cobros (cartera obligatoria)."""
+        cartera_param = (request.query_params.get('id_cartera') or '').strip()
+        if not cartera_param.isdigit():
             return Response(
-                {
-                    'fecha_reporte': fecha_reporte,
-                    'generado_en': generado_en,
-                    'count': 0,
-                    'page': 1,
-                    'next': None,
-                    'previous': None,
-                    'filas': [],
-                    'resumen': resumen_vacio,
-                }
+                {'detail': 'Seleccione una cartera (id_cartera) para descargar la hoja.'},
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
-        (
-            primera_cuota,
-            cuotas_por_prestamo,
-            cuotas_pagadas_nums,
-            _ultimo_pago_por,
-            abonado_por_prestamo,
-            abonado_cuota_por_prestamo,
-        ) = _cargar_auxiliar_reporte_integracion(ids)
-
-        clientes_ids: set[int] = set()
-        sum_inicial = Decimal('0')
-        sum_cuota = Decimal('0')
-        sum_actual = Decimal('0')
-        sum_plazo = 0
-        for p in prestamos_qs.iterator(chunk_size=200):
-            clientes_ids.add(p.id_cliente_id)
-            plan_rows = cuotas_por_prestamo.get(p.id_prestamo, [])
-            paid_nums = cuotas_pagadas_nums.get(p.id_prestamo, set())
-            abonado_cuota = abonado_cuota_por_prestamo.get(p.id_prestamo, {})
-            saldo_inicial, cuota_pl, saldo_act = _montos_reporte_integracion(
-                p,
-                primera_cuota,
-                plan_rows,
-                paid_nums,
-                abonado_por_prestamo.get(p.id_prestamo, Decimal('0.00')),
-                abonado_por_cuota=abonado_cuota if plan_rows else None,
-            )
-            sum_inicial += saldo_inicial
-            sum_cuota += cuota_pl
-            sum_actual += saldo_act
-            sum_plazo += int(p.plazo or 0)
-
-        resumen = {
-            'clientes_distintos': len(clientes_ids),
-            'prestamos': len(ids),
-            'total_cuotas_plazo': sum_plazo,
-            'total_saldo_inicial': str(round_money(sum_inicial)),
-            'total_saldo_actual': str(round_money(sum_actual)),
-            'total_cuota': str(round_money(sum_cuota)),
-        }
-
-        all_rows = (request.query_params.get('all') or '').strip().lower() in ('1', 'true', 'yes')
-
-        def _build_filas(prestamos_page: list[Prestamo]) -> list[dict]:
-            return [
-                _fila_reporte_integracion(
-                    p,
-                    primera_cuota,
-                    cuotas_por_prestamo,
-                    cuotas_pagadas_nums,
-                    abonado_por_prestamo,
-                    abonado_cuota_por_prestamo,
-                )
-                for p in prestamos_page
-            ]
-
-        if all_rows:
+        datos = _recolectar_reporte_integracion(self, request, force_all=True)
+        filas = datos.get('filas') or []
+        if not filas:
             return Response(
-                {
-                    'fecha_reporte': fecha_reporte,
-                    'generado_en': generado_en,
-                    'filas': _build_filas(list(prestamos_qs)),
-                    'resumen': resumen,
-                }
+                {'detail': 'No hay préstamos para los filtros seleccionados.'},
+                status=status.HTTP_404_NOT_FOUND,
             )
 
-        pagination = ReporteIntegracionPagination()
-        page_size = pagination.get_page_size(request) or pagination.page_size
-        paginator = Paginator(prestamos_qs, page_size)
-        page_number = request.query_params.get(pagination.page_query_param, 1)
-        page_obj = paginator.get_page(page_number)
+        cartera_etiqueta = (filas[0].get('cartera_nombre') or '').strip() or f'Cartera {cartera_param}'
+        datos['cartera_etiqueta'] = cartera_etiqueta
+        pdf_content = exportar_hoja_cobros_pdf(datos)
+        filename = nombre_archivo_hoja_cobros(datos)
 
-        payload = {
-            'fecha_reporte': fecha_reporte,
-            'generado_en': generado_en,
-            'count': paginator.count,
-            'page': page_obj.number,
-            'next': None,
-            'previous': None,
-            'filas': _build_filas(list(page_obj.object_list)),
-            'resumen': resumen,
-        }
-        if page_obj.has_next():
-            q = request.query_params.copy()
-            q[pagination.page_query_param] = str(page_obj.next_page_number())
-            payload['next'] = request.build_absolute_uri(f'{request.path}?{q.urlencode()}')
-        if page_obj.has_previous():
-            q = request.query_params.copy()
-            q[pagination.page_query_param] = str(page_obj.previous_page_number())
-            payload['previous'] = request.build_absolute_uri(f'{request.path}?{q.urlencode()}')
+        actor = Usuario.objects.filter(correo=request.user.email).only('id_usuario').first()
+        with transaction.atomic():
+            ultima = (
+                HojaCobroImpresion.objects.select_for_update()
+                .order_by('-numero_impresion')
+                .only('numero_impresion')
+                .first()
+            )
+            siguiente = (ultima.numero_impresion if ultima else 0) + 1
+            HojaCobroImpresion.objects.create(
+                numero_impresion=siguiente,
+                generado_por=actor,
+                total_registros=len(filas),
+            )
 
-        return Response(payload)
+        response = HttpResponse(pdf_content, content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        return response
 
     @action(detail=False, methods=['post'], url_path='registrar-impresion-hoja-cobros')
     def registrar_impresion_hoja_cobros(self, request):
