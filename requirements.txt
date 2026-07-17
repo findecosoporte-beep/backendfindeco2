@@ -20,3 +20,7 @@ whitenoise==6.9.0
 
 reportlab==4.2.2
 
+Pillow==11.3.0
+
+pypdfium2==5.12.1
+

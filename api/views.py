@@ -34,6 +34,7 @@ from .clientes_excel import (
     importar_clientes_xlsx,
 )
 from .estado_cuenta_export import exportar_estado_cuenta_pdf, recolectar_datos_estado_cuenta
+from .factura_imagen import pdf_ticket_a_png
 from .facturas_contabilidad import recolectar_facturas_contabilidad
 from .hoja_cobros_export import exportar_hoja_cobros_pdf, nombre_archivo_hoja_cobros
 from .historial_pagos_export import (
@@ -1868,6 +1869,33 @@ class PagoViewSet(viewsets.ModelViewSet):
         response = HttpResponse(pdf_content, content_type='application/pdf')
         response['Content-Disposition'] = (
             f'inline; filename="factura-{folio}-{ticket_format}mm.pdf"'
+        )
+        return response
+
+    @action(detail=True, methods=['get'], url_path='factura-png')
+    def factura_png(self, request, pk=None):
+        """Retorna el recibo como PNG (PDF convertido) para impresoras térmicas Bluetooth."""
+        pago = _resolver_pago_factura(self.get_object())
+        config = obtener_configuracion_facturacion()
+        ticket_format = request.query_params.get('ticket', '').strip()
+        if ticket_format not in ('58', '80'):
+            ticket_format = (
+                config.formato_ticket
+                if config.formato_ticket in ('58', '80')
+                else '58'
+            )
+        pdf_content = _build_pago_invoice_pdf(pago, ticket_format=ticket_format)
+        try:
+            png_content = pdf_ticket_a_png(pdf_content, ticket_format=ticket_format)
+        except Exception as exc:  # noqa: BLE001 — devolver error API claro al cliente móvil
+            return Response(
+                {'detail': f'No se pudo convertir la factura a imagen: {exc}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        folio = pago.numero_factura or f'F{pago.id_pago:03d}'
+        response = HttpResponse(png_content, content_type='image/png')
+        response['Content-Disposition'] = (
+            f'inline; filename="factura-{folio}-{ticket_format}mm.png"'
         )
         return response
 
