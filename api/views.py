@@ -361,7 +361,7 @@ def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
     sep()
 
     row('VENCIMIENTO', formato_fecha_hn(ctx['vencimiento']), body, False, 4.3)
-    row('BALANCE', money(ctx['balance']), body, False, 4.3)
+    row('SALDO PENDIENTE', money(ctx['balance']), body, False, 4.3)
     row('ATRASOS', money(ctx['atrasos']), body, False, 4.3)
     row('SGTE. CTA', money(ctx['sgte_cta']), body, False, 4.3)
     progreso = (
