@@ -1440,6 +1440,20 @@ class PrestamoViewSet(viewsets.ModelViewSet):
         ).all()
         return filtrar_prestamos_por_cobrador(qs, self.request)
 
+    @action(detail=False, methods=['get'], url_path='exportar-excel')
+    def exportar_excel(self, request):
+        """Exporta todos los préstamos visibles (filtros actuales) a Excel sin colores."""
+        from .prestamos_excel import exportar_prestamos_xlsx
+
+        qs = self.filter_queryset(self.get_queryset()).order_by('-id_prestamo')
+        content = exportar_prestamos_xlsx(qs)
+        response = HttpResponse(
+            content,
+            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
+        response['Content-Disposition'] = 'attachment; filename="prestamos_findeco.xlsx"'
+        return response
+
     def perform_destroy(self, instance):
         num_pagos = Pago.objects.filter(id_prestamo=instance).count()
         if num_pagos:
