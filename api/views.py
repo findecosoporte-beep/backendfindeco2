@@ -37,6 +37,7 @@ from .estado_cuenta_export import exportar_estado_cuenta_pdf, recolectar_datos_e
 from .factura_imagen import pdf_ticket_a_png
 from .facturas_contabilidad import recolectar_facturas_contabilidad
 from .hoja_cobros_export import (
+    exportar_hoja_cobros_listado_pdf,
     exportar_hoja_cobros_pdf,
     exportar_hoja_cobros_seguimiento_pdf,
     nombre_archivo_hoja_cobros,
@@ -1587,10 +1588,11 @@ class PrestamoViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'], url_path='hoja-cobros-pdf')
     def hoja_cobros_pdf(self, request):
-        """Descarga PDF con el listado completo de la hoja de cobros (cartera obligatoria).
+        """Descarga PDF con el listado de la hoja de cobros (cartera obligatoria).
 
-        vista=seguimiento → PDF compacto para cobrador (préstamo, cliente, estado, cuota,
-        cobrado hoy o vacío). Permite cartera sin préstamos (PDF vacío con encabezados).
+        vista=seguimiento → PDF cobrador (préstamo, cliente, estado, cuota, cobrado hoy).
+        vista=listado → PDF simple (préstamo, cliente, estado, cuota, espacio en blanco).
+        Sin vista → PDF landscape completo (hoja clásica).
         """
         cartera_param = (request.query_params.get('id_cartera') or '').strip()
         if not cartera_param.isdigit():
@@ -1601,10 +1603,11 @@ class PrestamoViewSet(viewsets.ModelViewSet):
 
         vista = (request.query_params.get('vista') or '').strip().lower()
         es_seguimiento = vista in ('seguimiento', 'cobrador', 'mobile')
+        es_listado = vista in ('listado', 'simple', 'web')
 
         datos = _recolectar_reporte_integracion(self, request, force_all=True)
         filas = datos.get('filas') or []
-        if not filas and not es_seguimiento:
+        if not filas and not es_seguimiento and not es_listado:
             return Response(
                 {'detail': 'No hay préstamos para los filtros seleccionados.'},
                 status=status.HTTP_404_NOT_FOUND,
@@ -1623,6 +1626,8 @@ class PrestamoViewSet(viewsets.ModelViewSet):
 
         if es_seguimiento:
             pdf_content = exportar_hoja_cobros_seguimiento_pdf(datos)
+        elif es_listado:
+            pdf_content = exportar_hoja_cobros_listado_pdf(datos)
         else:
             pdf_content = exportar_hoja_cobros_pdf(datos)
         filename = nombre_archivo_hoja_cobros(datos)

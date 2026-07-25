@@ -260,6 +260,144 @@ def exportar_hoja_cobros_seguimiento_pdf(datos: dict) -> bytes:
     return buffer.getvalue()
 
 
+def _texto_cuota_fila(fila: dict) -> str:
+    n_cuota = fila.get('cuota_siguiente_numero')
+    monto_cuota = fila.get('cuota_siguiente_monto') or fila.get('cuota')
+    if n_cuota:
+        return f'#{n_cuota}  {_money(monto_cuota)}'
+    return _money(monto_cuota) or '—'
+
+
+def exportar_hoja_cobros_listado_pdf(datos: dict) -> bytes:
+    """PDF simple: préstamo, cliente, estado, cuota y columna en blanco."""
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=letter,
+        leftMargin=12 * mm,
+        rightMargin=12 * mm,
+        topMargin=12 * mm,
+        bottomMargin=12 * mm,
+    )
+    styles = getSampleStyleSheet()
+    meta_style = ParagraphStyle(
+        'ListMeta',
+        parent=styles['Normal'],
+        fontSize=10,
+        alignment=1,
+        spaceAfter=2,
+        fontName='Helvetica-Bold',
+    )
+    cell_style = ParagraphStyle(
+        'ListCell',
+        parent=styles['Normal'],
+        fontSize=8,
+        leading=10,
+        wordWrap='CJK',
+    )
+    cell_right = ParagraphStyle(
+        'ListCellRight',
+        parent=cell_style,
+        alignment=2,
+    )
+    header_style = ParagraphStyle(
+        'ListHeader',
+        parent=styles['Normal'],
+        fontSize=8,
+        leading=10,
+        alignment=1,
+        fontName='Helvetica-Bold',
+        textColor=colors.black,
+    )
+
+    story = []
+    logo = platypus_logo_findeco(ancho_mm=48, alto_mm=18)
+    if logo is not None:
+        story.extend([logo, Spacer(1, 4)])
+    story.extend(
+        [
+            Paragraph(f"CARTERA: {datos.get('cartera_etiqueta', '—')}", meta_style),
+            Paragraph(f"FECHA: {_fecha_reporte_legible(datos.get('fecha_reporte'))}", meta_style),
+            Paragraph(f"GENERADO: {_generado_legible(datos.get('generado_en'))}", meta_style),
+            Spacer(1, 8),
+        ]
+    )
+
+    headers = ['N', 'Nº PRÉSTAMO', 'NOMBRE CLIENTE', 'ESTADO', 'CUOTA', 'ESPACIO']
+    col_widths = [10 * mm, 28 * mm, 62 * mm, 28 * mm, 30 * mm, 32 * mm]
+
+    table_data = [[_parrafo(h, header_style) for h in headers]]
+    filas = list(datos.get('filas') or [])
+    total_cuota = Decimal('0.00')
+    for idx, fila in enumerate(filas, start=1):
+        monto_cuota = fila.get('cuota_siguiente_monto') or fila.get('cuota')
+        try:
+            if monto_cuota not in (None, ''):
+                total_cuota += Decimal(str(monto_cuota))
+        except (ArithmeticError, ValueError):
+            pass
+        table_data.append(
+            [
+                str(idx),
+                str(fila.get('numero_prestamo') or ''),
+                _parrafo(str(fila.get('nombre_cliente') or ''), cell_style),
+                _parrafo(_estado_label(fila.get('estado')), cell_style),
+                _parrafo(_texto_cuota_fila(fila), cell_right),
+                '',
+            ]
+        )
+
+    if not filas:
+        table_data.append(
+            [
+                '',
+                '',
+                _parrafo('Sin préstamos en esta cartera.', cell_style),
+                '',
+                '',
+                '',
+            ]
+        )
+
+    table_data.append(
+        [
+            '',
+            '',
+            _parrafo(f'TOTALES ({len(filas)}):', cell_right),
+            '',
+            _parrafo(_money(total_cuota) if total_cuota else '', cell_right),
+            '',
+        ]
+    )
+
+    table = Table(table_data, colWidths=col_widths, repeatRows=1)
+    table.setStyle(
+        TableStyle(
+            [
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#F3F4F6')),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, -1), 8),
+                ('ALIGN', (0, 0), (0, -1), 'CENTER'),
+                ('ALIGN', (1, 0), (1, -1), 'CENTER'),
+                ('ALIGN', (4, 1), (4, -1), 'RIGHT'),
+                ('GRID', (0, 0), (-1, -1), 0.4, colors.black),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('LEFTPADDING', (0, 0), (-1, -1), 3),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 3),
+                ('TOPPADDING', (0, 0), (-1, -1), 4),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+                ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#FAFAFA')),
+                ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+                ('ROWBACKGROUNDS', (0, 1), (-1, -2), [colors.white, colors.HexColor('#FAFAFA')]),
+                ('BACKGROUND', (5, 1), (5, -2), colors.white),
+            ]
+        )
+    )
+    story.append(table)
+    doc.build(story)
+    return buffer.getvalue()
+
+
 def exportar_hoja_cobros_pdf(datos: dict) -> bytes:
     """PDF landscape con el listado completo de la hoja de cobros + columnas en blanco."""
     buffer = io.BytesIO()
