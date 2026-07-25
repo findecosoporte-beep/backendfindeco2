@@ -3,7 +3,7 @@
 import calendar
 import io
 from collections import defaultdict
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
@@ -1701,7 +1701,7 @@ def _rango_periodo_historial_pagos(
     mes_str: str | None,
     anio_str: str | None,
 ) -> tuple[date, date]:
-    """Devuelve (inicio, fin) inclusive para modo día, mes o año."""
+    """Devuelve (inicio, fin) inclusive para modo día, semana, mes o año."""
     hoy = timezone.localdate()
     modo_norm = (modo or 'dia').strip().lower()
     try:
@@ -1714,6 +1714,18 @@ def _rango_periodo_historial_pagos(
         if parsed is None:
             raise ValidationError({'fecha': 'Indique una fecha válida (AAAA-MM-DD).'})
         return parsed, parsed
+
+    if modo_norm in ('semana', 'semanal'):
+        # Semana laboral lun–dom que contiene la fecha de referencia (hoy si no se envía).
+        ref = hoy
+        if (fecha_str or '').strip():
+            parsed = parse_date(fecha_str.strip())
+            if parsed is None:
+                raise ValidationError({'fecha': 'Indique una fecha válida (AAAA-MM-DD).'})
+            ref = parsed
+        inicio = ref - timedelta(days=ref.weekday())
+        fin = inicio + timedelta(days=6)
+        return inicio, fin
 
     if modo_norm == 'mes':
         try:
@@ -1728,7 +1740,7 @@ def _rango_periodo_historial_pagos(
     if modo_norm == 'anio':
         return date(anio, 1, 1), date(anio, 12, 31)
 
-    raise ValidationError({'modo': 'Use modo=dia, modo=mes o modo=anio.'})
+    raise ValidationError({'modo': 'Use modo=dia, modo=semana, modo=mes o modo=anio.'})
 
 
 def _etiqueta_usuario_auditoria(usuario_id: int | None, nombre: str | None) -> str:
@@ -1739,7 +1751,7 @@ def _etiqueta_usuario_auditoria(usuario_id: int | None, nombre: str | None) -> s
 
 
 def _datos_historial_pagos_cobros(request) -> dict:
-    """Arma el historial de pagos por día, mes o año."""
+    """Arma el historial de pagos por día, semana, mes o año."""
     modo = request.query_params.get('modo', 'dia')
     fecha_str = request.query_params.get('fecha')
     mes_str = request.query_params.get('mes')
