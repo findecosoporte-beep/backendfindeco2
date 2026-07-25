@@ -36,7 +36,11 @@ from .clientes_excel import (
 from .estado_cuenta_export import exportar_estado_cuenta_pdf, recolectar_datos_estado_cuenta
 from .factura_imagen import pdf_ticket_a_png
 from .facturas_contabilidad import recolectar_facturas_contabilidad
-from .hoja_cobros_export import exportar_hoja_cobros_pdf, nombre_archivo_hoja_cobros
+from .hoja_cobros_export import (
+    exportar_hoja_cobros_pdf,
+    exportar_hoja_cobros_seguimiento_pdf,
+    nombre_archivo_hoja_cobros,
+)
 from .historial_pagos_export import (
     exportar_historial_pagos_pdf,
     exportar_historial_pagos_xlsx,
@@ -986,6 +990,7 @@ def _cargar_auxiliar_reporte_integracion(ids: list[int]) -> tuple[
     dict[int, Pago],
     dict[int, Decimal],
     dict[int, dict[int, Decimal]],
+    dict[int, Decimal],
 ]:
     """Cuotas, pagos y abonos por préstamo para el reporte de integración."""
     primera_cuota: dict[int, Decimal] = {}
@@ -1012,7 +1017,9 @@ def _cargar_auxiliar_reporte_integracion(ids: list[int]) -> tuple[
 
     pagos_por_prestamo: dict[int, list[Pago]] = defaultdict(list)
     abonado_por_prestamo: dict[int, Decimal] = defaultdict(lambda: Decimal('0.00'))
+    cobrado_hoy_por_prestamo: dict[int, Decimal] = defaultdict(lambda: Decimal('0.00'))
     ultimo_pago_por: dict[int, Pago] = {}
+    hoy = timezone.localdate()
     if ids:
         # Una sola consulta: incluir detalle_distribucion evita N+1 al calcular abonos por cuota.
         for pg in (
@@ -1027,6 +1034,8 @@ def _cargar_auxiliar_reporte_integracion(ids: list[int]) -> tuple[
                 'fecha_pago',
                 'saldo',
                 'detalle_distribucion',
+                'id_pago_factura_id',
+                'monto_recibido_cliente',
             )
             .order_by('id_prestamo_id', '-fecha_pago', '-id_pago')
             .iterator(chunk_size=500)
@@ -1038,6 +1047,16 @@ def _cargar_auxiliar_reporte_integracion(ids: list[int]) -> tuple[
             )
             if pid not in ultimo_pago_por:
                 ultimo_pago_por[pid] = pg
+            # Cobros del día: solo maestros (o filas con efectivo recibido) para no duplicar.
+            if pg.fecha_pago == hoy and (
+                pg.id_pago_factura_id is None or pg.monto_recibido_cliente is not None
+            ):
+                if pg.monto_recibido_cliente is not None:
+                    cobrado_hoy_por_prestamo[pid] += Decimal(pg.monto_recibido_cliente)
+                else:
+                    cobrado_hoy_por_prestamo[pid] += (
+                        Decimal(pg.capital) + Decimal(pg.interes) + Decimal(pg.mora)
+                    )
 
     abonado_cuota_por_prestamo: dict[int, dict[int, Decimal]] = {}
     cuotas_pagadas_nums: dict[int, set[int]] = {}
@@ -1054,6 +1073,7 @@ def _cargar_auxiliar_reporte_integracion(ids: list[int]) -> tuple[
         ultimo_pago_por,
         abonado_por_prestamo,
         abonado_cuota_por_prestamo,
+        cobrado_hoy_por_prestamo,
     )
 
 
@@ -1094,6 +1114,7 @@ def _fila_reporte_integracion(
     cuotas_pagadas_nums: dict[int, set[int]],
     abonado_por_prestamo: dict[int, Decimal],
     abonado_cuota_por_prestamo: dict[int, dict[int, Decimal]],
+    cobrado_hoy_por_prestamo: dict[int, Decimal] | None = None,
 ) -> dict:
     plan_rows = cuotas_por_prestamo.get(p.id_prestamo, [])
     paid_nums = cuotas_pagadas_nums.get(p.id_prestamo, set())
@@ -1225,6 +1246,11 @@ def _fila_reporte_integracion(
         'sucursal': (p.sucursal or '').strip() or (p.id_zona.nombre if p.id_zona_id else ''),
         'plazo': int(p.plazo or 0),
     }
+    monto_hoy = Decimal('0.00')
+    if cobrado_hoy_por_prestamo:
+        monto_hoy = round_money(cobrado_hoy_por_prestamo.get(p.id_prestamo, Decimal('0.00')))
+    row_data['cobrado_hoy'] = monto_hoy > 0
+    row_data['monto_cobrado_hoy'] = str(monto_hoy) if monto_hoy > 0 else ''
     row_data.update(sig_fields)
     return row_data
 
@@ -1313,6 +1339,7 @@ def _recolectar_reporte_integracion(viewset, request, *, force_all: bool = False
         _ultimo_pago_por,
         abonado_por_prestamo,
         abonado_cuota_por_prestamo,
+        cobrado_hoy_por_prestamo,
     ) = _cargar_auxiliar_reporte_integracion(ids)
 
     clientes_ids: set[int] = set()
@@ -1360,6 +1387,7 @@ def _recolectar_reporte_integracion(viewset, request, *, force_all: bool = False
                 cuotas_pagadas_nums,
                 abonado_por_prestamo,
                 abonado_cuota_por_prestamo,
+                cobrado_hoy_por_prestamo,
             )
             for p in prestamos_page
         ]
@@ -1559,7 +1587,11 @@ class PrestamoViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'], url_path='hoja-cobros-pdf')
     def hoja_cobros_pdf(self, request):
-        """Descarga PDF con el listado completo de la hoja de cobros (cartera obligatoria)."""
+        """Descarga PDF con el listado completo de la hoja de cobros (cartera obligatoria).
+
+        vista=seguimiento → PDF compacto para cobrador (préstamo, cliente, estado, cuota,
+        cobrado hoy o vacío). Permite cartera sin préstamos (PDF vacío con encabezados).
+        """
         cartera_param = (request.query_params.get('id_cartera') or '').strip()
         if not cartera_param.isdigit():
             return Response(
@@ -1567,17 +1599,32 @@ class PrestamoViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        vista = (request.query_params.get('vista') or '').strip().lower()
+        es_seguimiento = vista in ('seguimiento', 'cobrador', 'mobile')
+
         datos = _recolectar_reporte_integracion(self, request, force_all=True)
         filas = datos.get('filas') or []
-        if not filas:
+        if not filas and not es_seguimiento:
             return Response(
                 {'detail': 'No hay préstamos para los filtros seleccionados.'},
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        cartera_etiqueta = (filas[0].get('cartera_nombre') or '').strip() or f'Cartera {cartera_param}'
+        cartera = Cartera.objects.filter(pk=int(cartera_param)).only('nombre').first()
+        if filas:
+            cartera_etiqueta = (filas[0].get('cartera_nombre') or '').strip()
+        else:
+            cartera_etiqueta = ''
+        if not cartera_etiqueta and cartera:
+            cartera_etiqueta = (cartera.nombre or '').strip()
+        if not cartera_etiqueta:
+            cartera_etiqueta = f'Cartera {cartera_param}'
         datos['cartera_etiqueta'] = cartera_etiqueta
-        pdf_content = exportar_hoja_cobros_pdf(datos)
+
+        if es_seguimiento:
+            pdf_content = exportar_hoja_cobros_seguimiento_pdf(datos)
+        else:
+            pdf_content = exportar_hoja_cobros_pdf(datos)
         filename = nombre_archivo_hoja_cobros(datos)
 
         actor = Usuario.objects.filter(correo=request.user.email).only('id_usuario').first()
