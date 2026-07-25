@@ -1705,6 +1705,8 @@ def _rango_periodo_historial_pagos(
     fecha_str: str | None,
     mes_str: str | None,
     anio_str: str | None,
+    fecha_inicio_str: str | None = None,
+    fecha_fin_str: str | None = None,
 ) -> tuple[date, date]:
     """Devuelve (inicio, fin) inclusive para modo día, semana, mes o año."""
     hoy = timezone.localdate()
@@ -1721,7 +1723,20 @@ def _rango_periodo_historial_pagos(
         return parsed, parsed
 
     if modo_norm in ('semana', 'semanal'):
-        # Semana laboral lun–dom que contiene la fecha de referencia (hoy si no se envía).
+        # Si envían rango explícito (fecha_inicio / fecha_fin), se usa tal cual.
+        inicio_raw = (fecha_inicio_str or '').strip()
+        fin_raw = (fecha_fin_str or '').strip()
+        if inicio_raw or fin_raw:
+            inicio = parse_date(inicio_raw)
+            fin = parse_date(fin_raw)
+            if inicio is None:
+                raise ValidationError({'fecha_inicio': 'Indique una fecha de inicio válida (AAAA-MM-DD).'})
+            if fin is None:
+                raise ValidationError({'fecha_fin': 'Indique una fecha final válida (AAAA-MM-DD).'})
+            if fin < inicio:
+                raise ValidationError({'fecha_fin': 'La fecha final no puede ser anterior a la de inicio.'})
+            return inicio, fin
+        # Fallback: semana lun–dom de la fecha de referencia (o hoy).
         ref = hoy
         if (fecha_str or '').strip():
             parsed = parse_date(fecha_str.strip())
@@ -1759,11 +1774,20 @@ def _datos_historial_pagos_cobros(request) -> dict:
     """Arma el historial de pagos por día, semana, mes o año."""
     modo = request.query_params.get('modo', 'dia')
     fecha_str = request.query_params.get('fecha')
+    fecha_inicio_str = request.query_params.get('fecha_inicio')
+    fecha_fin_str = request.query_params.get('fecha_fin')
     mes_str = request.query_params.get('mes')
     anio_str = request.query_params.get('anio')
     id_cartera_raw = request.query_params.get('id_cartera')
 
-    inicio, fin = _rango_periodo_historial_pagos(modo, fecha_str, mes_str, anio_str)
+    inicio, fin = _rango_periodo_historial_pagos(
+        modo,
+        fecha_str,
+        mes_str,
+        anio_str,
+        fecha_inicio_str,
+        fecha_fin_str,
+    )
 
     qs = (
         filtrar_pagos_vigentes(Pago.objects)
