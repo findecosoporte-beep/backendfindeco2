@@ -2,6 +2,7 @@
 
 import calendar
 import io
+import re
 from collections import defaultdict
 from datetime import date, timedelta
 from decimal import Decimal
@@ -1482,6 +1483,29 @@ class PrestamoViewSet(viewsets.ModelViewSet):
         )
         response['Content-Disposition'] = 'attachment; filename="prestamos_findeco.xlsx"'
         return response
+
+    @action(detail=False, methods=['get'], url_path='siguiente-numero')
+    def siguiente_numero(self, request):
+        """Siguiente número de préstamo según el mayor consecutivo numérico existente."""
+        prefijo = 'PR-'
+        ancho = 5
+        max_seq = 0
+        qs = self.filter_queryset(self.get_queryset()).only('numero_prestamo')
+        for numero in qs.values_list('numero_prestamo', flat=True).iterator(chunk_size=500):
+            texto = (numero or '').strip()
+            m = re.match(r'^(.*?)(\d+)$', texto)
+            if not m:
+                continue
+            seq = int(m.group(2))
+            if seq > max_seq:
+                max_seq = seq
+                prefijo = m.group(1) or ''
+                ancho = len(m.group(2))
+        return Response(
+            {
+                'numero_prestamo': f'{prefijo}{str(max_seq + 1).zfill(ancho)}',
+            }
+        )
 
     def perform_destroy(self, instance):
         num_pagos = Pago.objects.filter(id_prestamo=instance).count()

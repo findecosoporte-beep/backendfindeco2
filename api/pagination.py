@@ -14,6 +14,10 @@ class StablePageNumberPagination(PageNumberPagination):
     alinear estado y paginador.
     """
 
+    page_size = 20
+    page_size_query_param = 'page_size'
+    max_page_size = 100
+
     def paginate_queryset(self, queryset, request, view=None):
         self.request = request
         page_size = self.get_page_size(request)
