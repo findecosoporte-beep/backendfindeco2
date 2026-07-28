@@ -767,7 +767,7 @@ class ClienteViewSet(viewsets.ModelViewSet):
                 ).distinct()
         if self.action == 'list':
             qs = qs.annotate(prestamos_count=Count('prestamo', distinct=True))
-        return qs
+        return qs.order_by('id_cliente')
 
     @action(detail=False, methods=['get'], url_path='exportar-excel')
     def exportar_excel(self, request):

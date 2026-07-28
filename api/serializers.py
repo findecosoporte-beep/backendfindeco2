@@ -10,6 +10,7 @@ from django.utils import timezone
 from rest_framework import serializers
 
 from .cobrador_scope import validar_cobro_por_cartera, usuario_operativo_desde_request
+from .core.anulacion_pago import filtrar_pagos_vigentes
 from .core.documento_honduras import normalizar_dni_hn, normalizar_rtn_hn_opcional
 from .core.telefono_honduras import normalizar_telefono_hn_opcional
 from .core.cuotas import extract_cuota_numero_from_documento
@@ -512,6 +513,9 @@ class PrestamoSerializer(serializers.ModelSerializer):
         data['modificado_por_nombre'] = (
             instance.modificado_por.nombre if instance.modificado_por_id else None
         )
+        data['cliente_nombre'] = (
+            instance.id_cliente.nombre if instance.id_cliente_id else None
+        )
         return data
 
     def _actor_desde_contexto(self) -> Usuario | None:
@@ -605,6 +609,46 @@ class PrestamoSerializer(serializers.ModelSerializer):
         if cliente is not None:
             validated_data['ciclos'] = _ciclos_para_renovacion(cliente)
         prestamo = super().create(validated_data)
+        self._generar_plan_cuotas(prestamo, reemplazar=False)
+        return prestamo
+
+    CAMPOS_PLAN_CUOTAS = (
+        'monto',
+        'plazo',
+        'tasa_interes',
+        'forma_pago',
+        'fecha_entrega',
+        'id_cartera',
+        'id_zona',
+    )
+
+    def _plan_cuotas_cambio(self, instance: Prestamo, validated_data: dict) -> bool:
+        for campo in self.CAMPOS_PLAN_CUOTAS:
+            if campo not in validated_data:
+                continue
+            nuevo = validated_data[campo]
+            actual = getattr(instance, campo)
+            if campo in ('monto', 'tasa_interes'):
+                if Decimal(str(nuevo if nuevo is not None else 0)) != Decimal(
+                    str(actual if actual is not None else 0)
+                ):
+                    return True
+            elif campo == 'plazo':
+                if int(nuevo or 0) != int(actual or 0):
+                    return True
+            elif campo in ('id_cartera', 'id_zona'):
+                nuevo_id = getattr(nuevo, 'pk', nuevo)
+                actual_id = getattr(instance, f'{campo}_id')
+                if nuevo_id != actual_id:
+                    return True
+            elif nuevo != actual:
+                return True
+        return False
+
+    def _generar_plan_cuotas(self, prestamo: Prestamo, *, reemplazar: bool = True) -> None:
+        """Genera (o regenera) el plan de cuotas del préstamo."""
+        if reemplazar:
+            PrestamoCuota.objects.filter(id_prestamo=prestamo).delete()
 
         monto = Decimal(prestamo.monto)
         plazo = int(prestamo.plazo)
@@ -628,20 +672,16 @@ class PrestamoSerializer(serializers.ModelSerializer):
 
         saldo_capital = monto
         cuotas: list[PrestamoCuota] = []
-
         for periodo in range(1, periodos + 1):
             interes = interes_fijo
             capital = capital_fijo
             total = cuota_periodica
-
             if periodo == periodos:
                 capital = saldo_capital
                 total = round_money(capital + interes)
-
             saldo_capital = round_money(saldo_capital - capital)
             if saldo_capital < 0:
                 saldo_capital = Decimal('0.00')
-
             cuotas.append(
                 PrestamoCuota(
                     id_prestamo=prestamo,
@@ -661,16 +701,34 @@ class PrestamoSerializer(serializers.ModelSerializer):
                     estado='pendiente',
                 )
             )
-
         PrestamoCuota.objects.bulk_create(cuotas)
-        return prestamo
 
     @transaction.atomic
     def update(self, instance, validated_data):
         actor = self._actor_desde_contexto()
         if actor is not None:
             validated_data['modificado_por'] = actor
-        return super().update(instance, validated_data)
+
+        regenerar_plan = self._plan_cuotas_cambio(instance, validated_data)
+        if regenerar_plan:
+            tiene_cobros = filtrar_pagos_vigentes(
+                Pago.objects.filter(id_prestamo=instance),
+            ).exists()
+            if tiene_cobros:
+                raise serializers.ValidationError(
+                    {
+                        'detail': (
+                            'No se pueden cambiar monto, plazo, tasa, forma de pago, '
+                            'fecha de entrega o cartera porque el préstamo ya tiene cobros. '
+                            'Anule los cobros primero o cree un préstamo nuevo.'
+                        )
+                    }
+                )
+
+        prestamo = super().update(instance, validated_data)
+        if regenerar_plan:
+            self._generar_plan_cuotas(prestamo)
+        return prestamo
 
 
 class SimulacionPrestamoSerializer(serializers.Serializer):
