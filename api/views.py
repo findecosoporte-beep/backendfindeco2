@@ -2,14 +2,15 @@
 
 import calendar
 import io
+import re
 from collections import defaultdict
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.core.paginator import Paginator
 from django.db import IntegrityError, transaction
-from django.db.models import Count, F, Sum
+from django.db.models import Count, F, Q, Sum
 from django.db.models.functions import ExtractMonth, ExtractWeekDay
 from django.http import HttpResponse
 from django.utils.dateparse import parse_date
@@ -34,7 +35,14 @@ from .clientes_excel import (
     importar_clientes_xlsx,
 )
 from .estado_cuenta_export import exportar_estado_cuenta_pdf, recolectar_datos_estado_cuenta
+from .factura_imagen import pdf_ticket_a_png
 from .facturas_contabilidad import recolectar_facturas_contabilidad
+from .hoja_cobros_export import (
+    exportar_hoja_cobros_listado_pdf,
+    exportar_hoja_cobros_pdf,
+    exportar_hoja_cobros_seguimiento_pdf,
+    nombre_archivo_hoja_cobros,
+)
 from .historial_pagos_export import (
     exportar_historial_pagos_pdf,
     exportar_historial_pagos_xlsx,
@@ -137,77 +145,95 @@ def _truncar_texto_ancho_pdf(pdf, texto: str, font: str, size: float, max_width:
     return f'{recorte}...'
 
 
-def _columnas_factura_ticket(ticket_w: float, is_80mm: bool, x0: float = 0) -> dict[str, float]:
-    """Cuadrícula del detalle centrada en el ancho del ticket."""
-    margin_side = 4 * mm if is_80mm else 3.5 * mm
-    table_left = x0 + margin_side
-    table_right = x0 + ticket_w - margin_side
-    table_w = table_right - table_left
+def _resolver_pago_factura(pago: Pago) -> Pago:
+    """Un solo ticket: líneas hijas reutilizan la factura del pago maestro."""
+    pk = pago.pk
+    if pago.monto_recibido_cliente is None:
+        maestro_id = getattr(pago, 'id_pago_factura_id', None)
+        if maestro_id:
+            pk = maestro_id
+    return Pago.objects.select_related(
+        'id_prestamo',
+        'id_prestamo__id_cliente',
+        'registrado_por',
+    ).get(pk=pk)
 
-    if is_80mm:
-        ratios = (0.40, 0.10, 0.24, 0.26)
-    else:
-        ratios = (0.42, 0.08, 0.25, 0.25)
 
-    w_prod, w_cant, w_prec, w_imp = (table_w * r for r in ratios)
-    cant_left = table_left + w_prod
-    cant_right = cant_left + w_cant
-    prec_left = cant_right
-    prec_right = prec_left + w_prec
-    imp_left = prec_right
-    imp_right = table_right
-    inner_pad = 0.4 * mm
+def _contexto_recibo_cobro(pago: Pago) -> dict:
+    """Datos de préstamo/cuotas para el recibo de cobro (balance, atrazos, progreso)."""
+    prestamo = pago.id_prestamo
+    plan = list(
+        PrestamoCuota.objects.filter(id_prestamo=prestamo).order_by('numero_cuota'),
+    )
+    pagos_qs = filtrar_pagos_vigentes(
+        Pago.objects.filter(id_prestamo=prestamo).only(
+            'id_pago',
+            'documento',
+            'capital',
+            'interes',
+            'mora',
+            'anulado',
+            'detalle_distribucion',
+        ),
+    )
+    abonado_por_cuota = abonado_por_cuota_desde_pagos(pagos_qs)
+    pagadas = cuotas_pagadas_completas(plan, abonado_por_cuota)
+    total_cuotas = len(plan) if plan else int(prestamo.plazo or 0)
+    cuotas_pagadas = len(pagadas)
+
+    hoy = timezone.localdate()
+    atrasos = Decimal('0.00')
+    for cuota in plan:
+        if cuota.numero_cuota in pagadas:
+            continue
+        if cuota.fecha_programada < hoy:
+            atrasos += pendiente_cuota(
+                cuota,
+                abonado_por_cuota.get(cuota.numero_cuota, Decimal('0.00')),
+            )
+    atrasos = round_money(atrasos)
+
+    siguiente = next(
+        (c for c in plan if c.numero_cuota not in pagadas),
+        None,
+    )
+    sgte_cta = (
+        round_money(monto_cuota_programada(siguiente))
+        if siguiente is not None
+        else Decimal('0.00')
+    )
+    vencimiento = (
+        siguiente.fecha_programada
+        if siguiente is not None
+        else prestamo.fecha_vencimiento
+    )
 
     return {
-        'pad': margin_side,
-        'table_left': table_left,
-        'table_right': table_right,
-        'producto_x': table_left,
-        'producto_max_w': max(cant_left - table_left - 0.6 * mm, 10 * mm),
-        'cant_center_x': (cant_left + cant_right) / 2,
-        'precio_x': prec_right - inner_pad,
-        'precio_center_x': (prec_left + prec_right) / 2,
-        'importe_x': imp_right - inner_pad,
-        'importe_center_x': (imp_left + imp_right) / 2,
+        'balance': round_money(Decimal(pago.saldo)),
+        'atrasos': atrasos,
+        'sgte_cta': sgte_cta,
+        'vencimiento': vencimiento,
+        'cuotas_pagadas': cuotas_pagadas,
+        'total_cuotas': total_cuotas,
+        'pago_a_cuotas': round_money(Decimal(pago.capital) + Decimal(pago.interes)),
+        'mora': round_money(Decimal(pago.mora or 0)),
     }
 
 
-def _resolver_pago_factura(pago: Pago) -> Pago:
-    """Un solo ticket: líneas hijas reutilizan la factura del pago maestro."""
-    if pago.monto_recibido_cliente is not None:
-        return pago
-    maestro_id = getattr(pago, 'id_pago_factura_id', None)
-    if maestro_id:
-        return Pago.objects.select_related(
-            'id_prestamo',
-            'id_prestamo__id_cliente',
-        ).get(pk=maestro_id)
-    return pago
-
-
 def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
-    """Genera un PDF de factura con estilo ticket (58mm u 80mm)."""
+    """Genera un recibo de cobro estilo ticket (58/80 mm) con datos fiscales SAR."""
     buffer = io.BytesIO()
     config = obtener_configuracion_facturacion()
     if ticket_format not in ('58', '80'):
         ticket_format = config.formato_ticket or '58'
     is_80mm = ticket_format == '80'
     ticket_w = (80 if is_80mm else 58) * mm
-    ticket_h = 210 * mm
+    ticket_h = 220 * mm
     pdf = canvas.Canvas(buffer, pagesize=(ticket_w, ticket_h))
-    width, height = ticket_w, ticket_h
 
     cliente = pago.id_prestamo.id_cliente
-    capital = round_money(Decimal(pago.capital))
-    interes = round_money(Decimal(pago.interes))
-    subtotal = round_money(capital + interes)
-    total_aplicado = subtotal
-    efectivo_recibido = (
-        round_money(Decimal(pago.monto_recibido_cliente))
-        if pago.monto_recibido_cliente is not None
-        else None
-    )
-    total_venta = efectivo_recibido if efectivo_recibido is not None else total_aplicado
+    prestamo = pago.id_prestamo
+    ctx = _contexto_recibo_cobro(pago)
     detalle_distribucion = pago.detalle_distribucion or []
     es_abono_parcial = any(
         isinstance(item, dict) and item.get('parcial') for item in detalle_distribucion
@@ -216,261 +242,201 @@ def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
         isinstance(item, dict) and item.get('liquida_prestamo') for item in detalle_distribucion
     )
 
-    x0 = 0
-    y = height - 12 * mm
-    cols = _columnas_factura_ticket(ticket_w, is_80mm, x0)
-    pad = cols['pad']
-    producto_x = cols['producto_x']
-    producto_max_w = cols['producto_max_w']
-    cant_center_x = cols['cant_center_x']
-    price_x = cols['precio_x']
-    price_center_x = cols['precio_center_x']
-    importe_x = cols['importe_x']
-    importe_center_x = cols['importe_center_x']
+    efectivo_recibido = (
+        round_money(Decimal(pago.monto_recibido_cliente))
+        if pago.monto_recibido_cliente is not None
+        else None
+    )
+    total_pagado = (
+        efectivo_recibido
+        if efectivo_recibido is not None
+        else round_money(Decimal(pago.capital) + Decimal(pago.interes) + Decimal(pago.mora or 0))
+    )
 
-    def center_text(text: str, size: int = 9, bold: bool = False, step_mm: float = 4.6) -> None:
+    momento_cobro = cobrado_en_efectivo(pago)
+    folio = pago.numero_factura or f'F{pago.id_pago:03d}-{prestamo.id_prestamo:08d}'
+    cobrador = ''
+    if pago.registrado_por_id and getattr(pago, 'registrado_por', None):
+        cobrador = (pago.registrado_por.nombre or '').strip()
+    if not cobrador:
+        cobrador = (prestamo.asesor or '').strip() or 'N/A'
+    telefonos = (cliente.telefono or '').strip() or '—'
+    if (cliente.referencia_telefono or '').strip():
+        telefonos = f'{telefonos} - {cliente.referencia_telefono.strip()}'
+
+    x0 = 0
+    margin = 3.2 * mm if is_80mm else 2.8 * mm
+    left = x0 + margin
+    right = x0 + ticket_w - margin
+    center_x = x0 + (ticket_w / 2)
+    y = ticket_h - 6 * mm
+
+    body = 8.4 if is_80mm else 7.2
+    body_sm = 7.4 if is_80mm else 6.5
+    title = 10 if is_80mm else 8.8
+
+    def center_text(text: str, size: float = body, bold: bool = False, step_mm: float = 4.2) -> None:
         nonlocal y
         pdf.setFont('Helvetica-Bold' if bold else 'Helvetica', size)
-        pdf.drawCentredString(x0 + (ticket_w / 2), y, text)
+        pdf.drawCentredString(center_x, y, text)
         y -= step_mm * mm
 
-    def line() -> None:
+    def wrap_center(text: str, size: float, bold: bool = False, step_mm: float = 3.8, max_chars: int = 0) -> None:
         nonlocal y
-        pdf.setStrokeColor(colors.HexColor('#111111'))
-        pdf.setLineWidth(0.6)
-        pdf.line(x0, y, x0 + ticket_w, y)
-        y -= 3 * mm
+        limit = max_chars or (38 if is_80mm else 28)
+        words = (text or '').split()
+        if not words:
+            return
+        lines: list[str] = []
+        actual = words[0]
+        for word in words[1:]:
+            candidato = f'{actual} {word}'
+            if len(candidato) <= limit:
+                actual = candidato
+            else:
+                lines.append(actual)
+                actual = word
+        lines.append(actual)
+        for linea in lines:
+            center_text(linea, size, bold, step_mm)
 
-    # Marco del ticket
-    pdf.setStrokeColor(colors.HexColor('#111111'))
-    pdf.setLineWidth(0.4)
-    pdf.rect(x0 + 1 * mm, 6 * mm, ticket_w - 2 * mm, height - 12 * mm, stroke=1, fill=0)
+    def sep() -> None:
+        nonlocal y
+        pdf.setStrokeColor(colors.HexColor('#222222'))
+        pdf.setLineWidth(0.5)
+        pdf.line(left, y + 1.2 * mm, right, y + 1.2 * mm)
+        y -= 2.8 * mm
 
-    center_x = x0 + (ticket_w / 2)
+    def row(label: str, value: str, size: float = body, bold: bool = False, step_mm: float = 4.4) -> None:
+        nonlocal y
+        pdf.setFont('Helvetica-Bold' if bold else 'Helvetica', size)
+        pdf.drawString(left, y, label)
+        pdf.drawRightString(right, y, value)
+        y -= step_mm * mm
+
+    def money(valor: Decimal) -> str:
+        return f'{valor:,.2f}'
+
+    # Avisos operativos (estilo recibo de cobranza)
+    center_text('...NO RECLAMACIONES SIN RECIBO...', body_sm, False, 3.6)
+    center_text('...EVITE MORA POR ATRASOS...', body_sm, False, 4.2)
+
     y = dibujar_logo_ticket(
         pdf,
         center_x,
         y,
-        ticket_w - 4 * mm,
-        14 if is_80mm else 11,
+        ticket_w - 2 * margin,
+        12 if is_80mm else 10,
     )
 
-    emisor_size = 8.5 if is_80mm else 7.4
     if config.razon_social.strip():
-        center_text(config.razon_social.strip(), emisor_size, True, 4.2)
+        wrap_center(config.razon_social.strip(), title - 0.5, True, 4.0)
     if config.nombre_comercial.strip() and config.nombre_comercial.strip() != config.razon_social.strip():
-        center_text(config.nombre_comercial.strip(), emisor_size, False, 4.0)
-    if config.rtn.strip():
-        center_text(f'RTN: {config.rtn.strip()}', emisor_size, False, 4.0)
+        wrap_center(config.nombre_comercial.strip(), body_sm, False, 3.6)
     if config.direccion.strip():
-        center_text(config.direccion.strip(), emisor_size - 0.6, False, 3.8)
-    if config.ciudad.strip():
-        center_text(config.ciudad.strip(), emisor_size - 0.6, False, 3.8)
-    if config.telefono.strip():
-        center_text(f'Tel: {config.telefono.strip()}', emisor_size - 0.6, False, 3.8)
-    if config.correo.strip():
-        center_text(config.correo.strip(), emisor_size - 0.6, False, 3.8)
+        wrap_center(config.direccion.strip(), body_sm, False, 3.5)
+    ciudad_tel = ' '.join(
+        p for p in [config.ciudad.strip(), f'Tel / Whatsapp {config.telefono.strip()}' if config.telefono.strip() else ''] if p
+    )
+    if ciudad_tel:
+        wrap_center(ciudad_tel, body_sm, False, 3.5)
+    elif config.ciudad.strip():
+        wrap_center(config.ciudad.strip(), body_sm, False, 3.5)
+    center_text(f'RTN: {config.rtn.strip() or "—"}', body, False, 4.4)
 
-    title_size = 10 if is_80mm else 9
-    folio_size = 9 if is_80mm else 8
-    titulo_factura = 'FACTURA' if config.cai.strip() else 'FACTURA ELECTRONICA'
-    center_text(titulo_factura, title_size, True)
-    folio = pago.numero_factura or f'F{pago.id_pago:03d}-{pago.id_prestamo.id_prestamo:08d}'
-    center_text(folio, folio_size, True, 4.8)
+    center_text('RECIBO DE INGRESOS', title, True, 4.6)
     if config.cai.strip():
-        cai_size = 7.8 if is_80mm else 7.0
-        center_text(f'CAI: {config.cai.strip()}', cai_size, False, 3.8)
-        if config.fecha_limite_emision:
-            center_text(
-                f'Fecha limite emision: {formato_fecha_hn(config.fecha_limite_emision)}',
-                cai_size,
-                False,
-                3.8,
-            )
-        rango_txt = texto_rango_autorizado(config)
-        if len(rango_txt) > 42 and not is_80mm:
-            mitad = len(rango_txt) // 2
-            corte = rango_txt.rfind(' ', 0, mitad + 10)
-            if corte <= 0:
-                corte = mitad
-            center_text(rango_txt[:corte].strip(), cai_size - 0.4, False, 3.6)
-            center_text(rango_txt[corte:].strip(), cai_size - 0.4, False, 3.6)
-        else:
-            center_text(rango_txt, cai_size - 0.4, False, 3.8)
-    if pago.anulado:
-        pdf.setFillColor(colors.HexColor('#CC0000'))
-        center_text('*** ANULADA ***', title_size, True, 5.2)
-        pdf.setFillColor(colors.black)
-    line()
+        center_text('FACTURA / COMPROBANTE SAR', body_sm, True, 3.8)
 
-    body_size = 9 if is_80mm else 7.8
-    pdf.setFont('Helvetica', body_size)
-    pdf.drawString(producto_x, y, f'Senor(es): {cliente.nombre}')
-    y -= 5 * mm
-    pdf.drawString(producto_x, y, f'RTN/DNI: {cliente.dni}')
-    y -= 5 * mm
-    momento_cobro = cobrado_en_efectivo(pago)
-    pdf.drawString(producto_x, y, f'Fecha cobro: {formato_fecha_hn(pago.fecha_pago)}')
-    y -= 5 * mm
-    pdf.drawString(producto_x, y, f'Hora registro: {formato_hora_hn(momento_cobro)}')
-    y -= 3 * mm
-    line()
+    pdf.setFont('Helvetica', body)
+    pdf.drawString(left, y, f'No: {folio}')
+    pdf.drawRightString(right, y, formato_fecha_hora_hn(momento_cobro))
+    y -= 5.2 * mm
 
-    header_size = 8.5 if is_80mm else 7.6
-    detail_size = header_size
-    header_font = 'Helvetica-Bold'
-    detail_font = 'Helvetica'
-    pdf.setFont(header_font, header_size)
-    pdf.drawString(producto_x, y, 'Producto')
-    pdf.drawCentredString(cant_center_x, y, 'Cant.')
-    pdf.drawCentredString(price_center_x, y, 'Precio')
-    pdf.drawCentredString(importe_center_x, y, 'Importe')
-    y -= 3 * mm
-    line()
-
-    pdf.setFont(detail_font, detail_size)
-
-    def dibujar_linea_detalle(producto_label: str, importe_linea: Decimal) -> None:
-        nonlocal y
-        etiqueta = _truncar_texto_ancho_pdf(
-            pdf, producto_label, detail_font, detail_size, producto_max_w,
-        )
-        monto_txt = f'{importe_linea:,.2f}'
-        pdf.drawString(producto_x, y, etiqueta)
-        pdf.drawCentredString(cant_center_x, y, '1')
-        pdf.drawRightString(price_x, y, monto_txt)
-        pdf.drawRightString(importe_x, y, monto_txt)
-        y -= 4.8 * mm
-
-    lineas_detalle = [
-        item for item in detalle_distribucion if isinstance(item, dict)
-    ]
-    cuota_ref = extract_cuota_numero_from_documento(pago.documento)
-
-    if liquida_prestamo:
-        plan_cuotas = list(
-            PrestamoCuota.objects.filter(id_prestamo=pago.id_prestamo).order_by('numero_cuota'),
-        )
-        for cuota_row in plan_cuotas:
-            monto_cuota = round_money(monto_cuota_programada(cuota_row))
-            dibujar_linea_detalle(f'Cuota #{cuota_row.numero_cuota}', monto_cuota)
-        for item in lineas_detalle:
-            if item.get('abono_capital'):
-                total_abono = round_money(Decimal(str(item.get('total', '0'))))
-                if total_abono > 0:
-                    dibujar_linea_detalle('Abono a capital', total_abono)
-    elif len(lineas_detalle) > 1:
-        for item in lineas_detalle:
-            if item.get('abono_capital'):
-                total_abono = round_money(Decimal(str(item.get('total', '0'))))
-                if total_abono > 0:
-                    dibujar_linea_detalle('Abono a capital', total_abono)
-            elif item.get('cuota') is not None:
-                monto_cuota = round_money(Decimal(str(item.get('total', '0'))))
-                etiqueta = f'Cuota #{item["cuota"]}'
-                if item.get('parcial'):
-                    etiqueta = f'{etiqueta} (parcial)'
-                dibujar_linea_detalle(etiqueta, monto_cuota)
-    elif not lineas_detalle:
-        producto_label = f'COBRO {pago.documento or "PAGO"}'
-        dibujar_linea_detalle(producto_label, total_venta)
-    else:
-        if cuota_ref is not None:
-            producto_label = f'Pago cuota #{cuota_ref}'
-        else:
-            producto_label = f'Pago {pago.documento or "préstamo"}'
-        dibujar_linea_detalle(producto_label, total_venta)
-    line()
-
-    # Totales.
-    pdf.setFont('Helvetica', detail_size)
-    base_gravada = total_venta
-    isv_monto = Decimal('0.00')
-    if config.aplicar_isv and config.porcentaje_isv > 0:
-        pct = Decimal(config.porcentaje_isv) / Decimal('100')
-        base_gravada = round_money(total_venta / (Decimal('1') + pct))
-        isv_monto = round_money(total_venta - base_gravada)
-
-    if efectivo_recibido is not None:
-        totals: list[tuple[str, Decimal]] = [
-            ('EFECTIVO RECIBIDO', efectivo_recibido),
-        ]
-    elif config.aplicar_isv and isv_monto > 0:
-        totals = [
-            ('OP. GRAVADAS', base_gravada),
-            ('SUBTOTAL', base_gravada),
-            (f'ISV ({config.porcentaje_isv}%)', isv_monto),
-        ]
-    elif not config.aplicar_isv:
-        totals = [
-            ('SUBTOTAL', subtotal),
-        ]
-        if config.leyenda_exento.strip():
-            pdf.setFont('Helvetica', detail_size - 0.6)
-            pdf.drawString(producto_x, y, config.leyenda_exento.strip()[:48])
-            y -= 4.2 * mm
-            pdf.setFont('Helvetica', detail_size)
-    else:
-        totals = [
-            ('OP. GRAVADAS', subtotal),
-            ('SUBTOTAL', subtotal),
-        ]
-    for label, amount in totals:
-        pdf.drawString(producto_x, y, label)
-        pdf.drawRightString(importe_x, y, f'L/ {amount:,.2f}')
-        y -= 4.5 * mm
-
-    pdf.setFont('Helvetica-Bold', 10 if is_80mm else 8.8)
-    pdf.drawString(producto_x, y, 'TOTAL VENTA')
-    pdf.drawRightString(importe_x, y, f'L/ {total_venta:,.2f}')
+    pdf.setFont('Helvetica-Bold', body + 0.4)
+    nombre = (cliente.nombre or '').strip().upper() or 'CLIENTE'
+    pdf.drawString(left, y, _truncar_texto_ancho_pdf(pdf, nombre, 'Helvetica-Bold', body + 0.4, right - left))
+    pdf.setStrokeColor(colors.HexColor('#111111'))
+    pdf.setLineWidth(0.6)
+    pdf.line(left, y - 1.1 * mm, min(left + pdf.stringWidth(nombre, 'Helvetica-Bold', body + 0.4), right), y - 1.1 * mm)
     y -= 5.5 * mm
+
+    row('# PRESTAMO', str(prestamo.numero_prestamo or prestamo.id_prestamo), body, True, 4.3)
+    row('COBRADOR', _truncar_texto_ancho_pdf(pdf, cobrador.upper(), 'Helvetica', body, right - left - 28 * mm), body, False, 4.3)
+    row('TELEFONOS', telefonos, body, False, 4.6)
+    sep()
+
+    row('VENCIMIENTO', formato_fecha_hn(ctx['vencimiento']), body, False, 4.3)
+    row('SALDO PENDIENTE', money(ctx['balance']), body, False, 4.3)
+    row('ATRASOS', money(ctx['atrasos']), body, False, 4.3)
+    row('SGTE. CTA', money(ctx['sgte_cta']), body, False, 4.3)
+    progreso = (
+        f"{ctx['cuotas_pagadas']} DE {ctx['total_cuotas']}"
+        if ctx['total_cuotas']
+        else str(ctx['cuotas_pagadas'])
+    )
+    row('PAGADO', progreso, body, False, 4.3)
+    row('Pago a cuotas', money(ctx['pago_a_cuotas']), body, False, 4.3)
+    row('Mora', money(ctx['mora']), body, False, 4.8)
+    sep()
+
+    row('TOTAL PAGADO', money(total_pagado), title - 0.5, True, 5.2)
+
     if es_abono_parcial:
-        pdf.setFont('Helvetica', detail_size)
-        cuotas_parciales = [
-            item.get('cuota')
-            for item in lineas_detalle
-            if isinstance(item, dict) and item.get('parcial') and item.get('cuota') is not None
-        ]
-        if cuotas_parciales:
-            pdf.drawString(
-                producto_x,
-                y,
-                f'Abono parcial a cuota #{cuotas_parciales[0]}',
-            )
-        else:
-            pdf.drawString(producto_x, y, 'Abono parcial a la cuota')
-        y -= 4.2 * mm
+        center_text('Abono parcial a la cuota', body_sm, False, 3.8)
     if liquida_prestamo:
         pdf.setFillColor(colors.HexColor('#0A6E31'))
-        center_text('*** PRESTAMO LIQUIDADO ***', 9 if is_80mm else 8, True, 4.6)
+        center_text('*** PRESTAMO LIQUIDADO ***', body, True, 4.2)
         pdf.setFillColor(colors.black)
-    line()
+    if pago.anulado:
+        pdf.setFillColor(colors.HexColor('#CC0000'))
+        center_text('*** ANULADA ***', title - 0.5, True, 4.4)
+        pdf.setFillColor(colors.black)
 
-    # Datos extra y QR.
-    meta_size = 8.5 if is_80mm else 7.6
-    center_text(f'PRESTAMO: {pago.id_prestamo.numero_prestamo}', meta_size, True, 4.2)
-    center_text(f'VENDEDOR(A): {pago.id_prestamo.asesor or "N/A"}', meta_size, True, 4.2)
-    line()
-    center_text('Representacion impresa de la factura electronica', 7.8 if is_80mm else 7, False, 3.8)
+    # Bloque fiscal SAR (compacto)
+    if config.cai.strip():
+        sep()
+        center_text('DATOS FISCALES SAR', body_sm, True, 3.8)
+        center_text(f'CAI: {config.cai.strip()}', body_sm - 0.2, False, 3.4)
+        if config.fecha_limite_emision:
+            center_text(
+                f'Limite emision: {formato_fecha_hn(config.fecha_limite_emision)}',
+                body_sm - 0.2,
+                False,
+                3.4,
+            )
+        rango_txt = texto_rango_autorizado(config)
+        wrap_center(rango_txt, body_sm - 0.4, False, 3.2, max_chars=36 if is_80mm else 26)
+
+    if config.aplicar_isv and config.porcentaje_isv > 0:
+        pct = Decimal(config.porcentaje_isv) / Decimal('100')
+        base = round_money(total_pagado / (Decimal('1') + pct))
+        isv = round_money(total_pagado - base)
+        row(f'ISV ({config.porcentaje_isv}%)', money(isv), body_sm, False, 3.8)
+    elif config.leyenda_exento.strip():
+        wrap_center(config.leyenda_exento.strip(), body_sm - 0.2, False, 3.4)
+
+    sep()
     pie = (config.leyenda_pie or 'Gracias por su preferencia').strip()
-    center_text(pie, 8.5 if is_80mm else 7.6, False, 4.6)
+    wrap_center(pie, body_sm, False, 3.8)
+    center_text('Representacion impresa del comprobante', body_sm - 0.4, False, 3.6)
 
     qr_folio = pago.numero_factura or str(pago.id_pago)
     qr_payload = (
-        f"FACTURA:{qr_folio}|PAGO:{pago.id_pago}|PRESTAMO:{pago.id_prestamo.numero_prestamo}|"
+        f"FACTURA:{qr_folio}|PAGO:{pago.id_pago}|PRESTAMO:{prestamo.numero_prestamo}|"
         f"CLIENTE:{cliente.dni}|FECHA:{pago.fecha_pago.isoformat()}|"
-        f"HORA:{formato_hora_hn(momento_cobro)}|TOTAL:{total_venta}"
+        f"HORA:{formato_hora_hn(momento_cobro)}|TOTAL:{total_pagado}"
     )
     qr_code = qr.QrCodeWidget(qr_payload)
     bounds = qr_code.getBounds()
-    qr_size = (18 if is_80mm else 14) * mm
+    qr_size = (16 if is_80mm else 13) * mm
     qr_width = bounds[2] - bounds[0]
     qr_height = bounds[3] - bounds[1]
     drawing = Drawing(qr_size, qr_size)
     drawing.add(qr_code)
     drawing.scale(qr_size / qr_width, qr_size / qr_height)
-    qr_x = x0 + (ticket_w / 2) - (qr_size / 2)
-    qr_y = max(17 * mm, y - qr_size)
+    qr_x = center_x - (qr_size / 2)
+    qr_y = max(8 * mm, y - qr_size - 1 * mm)
     renderPDF.draw(drawing, pdf, qr_x, qr_y)
 
     pdf.showPage()
@@ -787,9 +753,21 @@ class ClienteViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         qs = Cliente.objects.all()
+        id_cartera_raw = (self.request.query_params.get('id_cartera') or '').strip()
+        if self.action == 'list' and id_cartera_raw.isdigit():
+            id_cartera = int(id_cartera_raw)
+            cartera = Cartera.objects.filter(pk=id_cartera).only('dia_cobro').first()
+            if cartera is None:
+                qs = qs.none()
+            else:
+                # Clientes de la cartera: préstamos en esa cartera o mismo día de cobro.
+                qs = qs.filter(
+                    Q(prestamo__id_cartera_id=id_cartera)
+                    | Q(dia_cobro_semanal=cartera.dia_cobro),
+                ).distinct()
         if self.action == 'list':
-            qs = qs.annotate(prestamos_count=Count('prestamo'))
-        return qs
+            qs = qs.annotate(prestamos_count=Count('prestamo', distinct=True))
+        return qs.order_by('id_cliente')
 
     @action(detail=False, methods=['get'], url_path='exportar-excel')
     def exportar_excel(self, request):
@@ -1014,6 +992,7 @@ def _cargar_auxiliar_reporte_integracion(ids: list[int]) -> tuple[
     dict[int, Pago],
     dict[int, Decimal],
     dict[int, dict[int, Decimal]],
+    dict[int, Decimal],
 ]:
     """Cuotas, pagos y abonos por préstamo para el reporte de integración."""
     primera_cuota: dict[int, Decimal] = {}
@@ -1040,7 +1019,9 @@ def _cargar_auxiliar_reporte_integracion(ids: list[int]) -> tuple[
 
     pagos_por_prestamo: dict[int, list[Pago]] = defaultdict(list)
     abonado_por_prestamo: dict[int, Decimal] = defaultdict(lambda: Decimal('0.00'))
+    cobrado_hoy_por_prestamo: dict[int, Decimal] = defaultdict(lambda: Decimal('0.00'))
     ultimo_pago_por: dict[int, Pago] = {}
+    hoy = timezone.localdate()
     if ids:
         # Una sola consulta: incluir detalle_distribucion evita N+1 al calcular abonos por cuota.
         for pg in (
@@ -1055,6 +1036,8 @@ def _cargar_auxiliar_reporte_integracion(ids: list[int]) -> tuple[
                 'fecha_pago',
                 'saldo',
                 'detalle_distribucion',
+                'id_pago_factura_id',
+                'monto_recibido_cliente',
             )
             .order_by('id_prestamo_id', '-fecha_pago', '-id_pago')
             .iterator(chunk_size=500)
@@ -1066,6 +1049,16 @@ def _cargar_auxiliar_reporte_integracion(ids: list[int]) -> tuple[
             )
             if pid not in ultimo_pago_por:
                 ultimo_pago_por[pid] = pg
+            # Cobros del día: solo maestros (o filas con efectivo recibido) para no duplicar.
+            if pg.fecha_pago == hoy and (
+                pg.id_pago_factura_id is None or pg.monto_recibido_cliente is not None
+            ):
+                if pg.monto_recibido_cliente is not None:
+                    cobrado_hoy_por_prestamo[pid] += Decimal(pg.monto_recibido_cliente)
+                else:
+                    cobrado_hoy_por_prestamo[pid] += (
+                        Decimal(pg.capital) + Decimal(pg.interes) + Decimal(pg.mora)
+                    )
 
     abonado_cuota_por_prestamo: dict[int, dict[int, Decimal]] = {}
     cuotas_pagadas_nums: dict[int, set[int]] = {}
@@ -1082,6 +1075,7 @@ def _cargar_auxiliar_reporte_integracion(ids: list[int]) -> tuple[
         ultimo_pago_por,
         abonado_por_prestamo,
         abonado_cuota_por_prestamo,
+        cobrado_hoy_por_prestamo,
     )
 
 
@@ -1122,6 +1116,8 @@ def _fila_reporte_integracion(
     cuotas_pagadas_nums: dict[int, set[int]],
     abonado_por_prestamo: dict[int, Decimal],
     abonado_cuota_por_prestamo: dict[int, dict[int, Decimal]],
+    cobrado_hoy_por_prestamo: dict[int, Decimal] | None = None,
+    ultimo_pago_por: dict[int, Pago] | None = None,
 ) -> dict:
     plan_rows = cuotas_por_prestamo.get(p.id_prestamo, [])
     paid_nums = cuotas_pagadas_nums.get(p.id_prestamo, set())
@@ -1243,6 +1239,7 @@ def _fila_reporte_integracion(
         'fecha_entrega': p.fecha_entrega.isoformat(),
         'fecha_vencimiento': p.fecha_vencimiento.isoformat(),
         'dias_mora': int(p.dias_mora or 0),
+        'monto': str(round_money(Decimal(p.monto))),
         'saldo_inicial': str(saldo_inicial),
         'cuota': str(cuota_pl),
         'saldo_actual': str(saldo_act),
@@ -1253,8 +1250,201 @@ def _fila_reporte_integracion(
         'sucursal': (p.sucursal or '').strip() or (p.id_zona.nombre if p.id_zona_id else ''),
         'plazo': int(p.plazo or 0),
     }
+    monto_hoy = Decimal('0.00')
+    if cobrado_hoy_por_prestamo:
+        monto_hoy = round_money(cobrado_hoy_por_prestamo.get(p.id_prestamo, Decimal('0.00')))
+    row_data['cobrado_hoy'] = monto_hoy > 0
+    row_data['monto_cobrado_hoy'] = str(monto_hoy) if monto_hoy > 0 else ''
+    ultimo = (ultimo_pago_por or {}).get(p.id_prestamo)
+    if ultimo is not None:
+        if ultimo.monto_recibido_cliente is not None:
+            monto_ult = round_money(Decimal(ultimo.monto_recibido_cliente))
+        else:
+            monto_ult = round_money(
+                Decimal(ultimo.capital) + Decimal(ultimo.interes) + Decimal(ultimo.mora)
+            )
+        row_data['fecha_ultimo_pago'] = ultimo.fecha_pago.isoformat()
+        row_data['monto_ultimo_pago'] = str(monto_ult)
+    else:
+        row_data['fecha_ultimo_pago'] = ''
+        row_data['monto_ultimo_pago'] = ''
     row_data.update(sig_fields)
     return row_data
+
+
+def _recolectar_reporte_integracion(viewset, request, *, force_all: bool = False) -> dict:
+    """Arma el payload de reporte-integracion (mismas filas/resumen que el listado JSON)."""
+    qs = viewset.get_queryset()
+
+    estado_param = (request.query_params.get('estado') or '').strip()
+    if estado_param:
+        lista = [e.strip() for e in estado_param.split(',') if e.strip()]
+        if lista:
+            qs = qs.filter(estado__in=lista)
+
+    zona_param = (request.query_params.get('id_zona') or '').strip()
+    if zona_param.isdigit():
+        qs = qs.filter(id_zona_id=int(zona_param))
+
+    cartera_param = (request.query_params.get('id_cartera') or '').strip()
+    if cartera_param.isdigit():
+        qs = qs.filter(id_cartera_id=int(cartera_param))
+
+    id_cliente_param = (request.query_params.get('id_cliente') or '').strip()
+    if id_cliente_param.isdigit():
+        qs = qs.filter(id_cliente_id=int(id_cliente_param))
+
+    id_prestamo_param = (request.query_params.get('id_prestamo') or '').strip()
+    if id_prestamo_param.isdigit():
+        qs = qs.filter(id_prestamo=int(id_prestamo_param))
+
+    fd = (request.query_params.get('fecha_entrega_desde') or '').strip()
+    if fd:
+        qs = qs.filter(fecha_entrega__gte=fd)
+    fh = (request.query_params.get('fecha_entrega_hasta') or '').strip()
+    if fh:
+        qs = qs.filter(fecha_entrega__lte=fh)
+
+    forma_pago_param = (request.query_params.get('forma_pago') or '').strip()
+    if forma_pago_param:
+        valid_forma = {'semanal', 'mensual', 'quincenal'}
+        if forma_pago_param in valid_forma:
+            qs = qs.filter(forma_pago=forma_pago_param)
+
+    prestamos_qs = qs.order_by('numero_prestamo')
+    ids = list(prestamos_qs.values_list('id_prestamo', flat=True))
+    fecha_reporte = timezone.localdate().isoformat()
+    generado_en = ahora_local_iso()
+
+    resumen_vacio = {
+        'clientes_distintos': 0,
+        'prestamos': 0,
+        'total_cuotas_plazo': 0,
+        'total_saldo_inicial': '0',
+        'total_saldo_actual': '0',
+        'total_cuota': '0',
+    }
+
+    if not ids:
+        all_rows_empty = force_all or (
+            (request.query_params.get('all') or '').strip().lower() in ('1', 'true', 'yes')
+        )
+        if all_rows_empty:
+            return {
+                'fecha_reporte': fecha_reporte,
+                'generado_en': generado_en,
+                'filas': [],
+                'resumen': resumen_vacio,
+                'all_rows': True,
+            }
+        return {
+            'fecha_reporte': fecha_reporte,
+            'generado_en': generado_en,
+            'filas': [],
+            'resumen': resumen_vacio,
+            'count': 0,
+            'page': 1,
+            'next': None,
+            'previous': None,
+            'all_rows': False,
+        }
+
+    (
+        primera_cuota,
+        cuotas_por_prestamo,
+        cuotas_pagadas_nums,
+        ultimo_pago_por,
+        abonado_por_prestamo,
+        abonado_cuota_por_prestamo,
+        cobrado_hoy_por_prestamo,
+    ) = _cargar_auxiliar_reporte_integracion(ids)
+
+    clientes_ids: set[int] = set()
+    sum_inicial = Decimal('0')
+    sum_cuota = Decimal('0')
+    sum_actual = Decimal('0')
+    sum_plazo = 0
+    for p in prestamos_qs.iterator(chunk_size=200):
+        clientes_ids.add(p.id_cliente_id)
+        plan_rows = cuotas_por_prestamo.get(p.id_prestamo, [])
+        paid_nums = cuotas_pagadas_nums.get(p.id_prestamo, set())
+        abonado_cuota = abonado_cuota_por_prestamo.get(p.id_prestamo, {})
+        saldo_inicial, cuota_pl, saldo_act = _montos_reporte_integracion(
+            p,
+            primera_cuota,
+            plan_rows,
+            paid_nums,
+            abonado_por_prestamo.get(p.id_prestamo, Decimal('0.00')),
+            abonado_por_cuota=abonado_cuota if plan_rows else None,
+        )
+        sum_inicial += saldo_inicial
+        sum_cuota += cuota_pl
+        sum_actual += saldo_act
+        sum_plazo += int(p.plazo or 0)
+
+    resumen = {
+        'clientes_distintos': len(clientes_ids),
+        'prestamos': len(ids),
+        'total_cuotas_plazo': sum_plazo,
+        'total_saldo_inicial': str(round_money(sum_inicial)),
+        'total_saldo_actual': str(round_money(sum_actual)),
+        'total_cuota': str(round_money(sum_cuota)),
+    }
+
+    all_rows = force_all or (
+        (request.query_params.get('all') or '').strip().lower() in ('1', 'true', 'yes')
+    )
+
+    def _build_filas(prestamos_page: list) -> list[dict]:
+        return [
+            _fila_reporte_integracion(
+                p,
+                primera_cuota,
+                cuotas_por_prestamo,
+                cuotas_pagadas_nums,
+                abonado_por_prestamo,
+                abonado_cuota_por_prestamo,
+                cobrado_hoy_por_prestamo,
+                ultimo_pago_por,
+            )
+            for p in prestamos_page
+        ]
+
+    if all_rows:
+        return {
+            'fecha_reporte': fecha_reporte,
+            'generado_en': generado_en,
+            'filas': _build_filas(list(prestamos_qs)),
+            'resumen': resumen,
+            'all_rows': True,
+        }
+
+    pagination = ReporteIntegracionPagination()
+    page_size = pagination.get_page_size(request) or pagination.page_size
+    paginator = Paginator(prestamos_qs, page_size)
+    page_number = request.query_params.get(pagination.page_query_param, 1)
+    page_obj = paginator.get_page(page_number)
+
+    payload = {
+        'fecha_reporte': fecha_reporte,
+        'generado_en': generado_en,
+        'count': paginator.count,
+        'page': page_obj.number,
+        'next': None,
+        'previous': None,
+        'filas': _build_filas(list(page_obj.object_list)),
+        'resumen': resumen,
+        'all_rows': False,
+    }
+    if page_obj.has_next():
+        q = request.query_params.copy()
+        q[pagination.page_query_param] = str(page_obj.next_page_number())
+        payload['next'] = request.build_absolute_uri(f'{request.path}?{q.urlencode()}')
+    if page_obj.has_previous():
+        q = request.query_params.copy()
+        q[pagination.page_query_param] = str(page_obj.previous_page_number())
+        payload['previous'] = request.build_absolute_uri(f'{request.path}?{q.urlencode()}')
+    return payload
 
 
 class PrestamoViewSet(viewsets.ModelViewSet):
@@ -1296,6 +1486,43 @@ class PrestamoViewSet(viewsets.ModelViewSet):
         ).all()
         return filtrar_prestamos_por_cobrador(qs, self.request)
 
+    @action(detail=False, methods=['get'], url_path='exportar-excel')
+    def exportar_excel(self, request):
+        """Exporta todos los préstamos visibles (filtros actuales) a Excel sin colores."""
+        from .prestamos_excel import exportar_prestamos_xlsx
+
+        qs = self.filter_queryset(self.get_queryset()).order_by('-id_prestamo')
+        content = exportar_prestamos_xlsx(qs)
+        response = HttpResponse(
+            content,
+            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
+        response['Content-Disposition'] = 'attachment; filename="prestamos_findeco.xlsx"'
+        return response
+
+    @action(detail=False, methods=['get'], url_path='siguiente-numero')
+    def siguiente_numero(self, request):
+        """Siguiente número de préstamo según el mayor consecutivo numérico existente."""
+        prefijo = 'PR-'
+        ancho = 5
+        max_seq = 0
+        qs = self.filter_queryset(self.get_queryset()).only('numero_prestamo')
+        for numero in qs.values_list('numero_prestamo', flat=True).iterator(chunk_size=500):
+            texto = (numero or '').strip()
+            m = re.match(r'^(.*?)(\d+)$', texto)
+            if not m:
+                continue
+            seq = int(m.group(2))
+            if seq > max_seq:
+                max_seq = seq
+                prefijo = m.group(1) or ''
+                ancho = len(m.group(2))
+        return Response(
+            {
+                'numero_prestamo': f'{prefijo}{str(max_seq + 1).zfill(ancho)}',
+            }
+        )
+
     def perform_destroy(self, instance):
         num_pagos = Pago.objects.filter(id_prestamo=instance).count()
         if num_pagos:
@@ -1303,7 +1530,8 @@ class PrestamoViewSet(viewsets.ModelViewSet):
                 {
                     'detail': (
                         f'No se puede eliminar el préstamo: tiene {num_pagos} cobro(s) registrado(s). '
-                        'Anule los cobros antes de eliminar el préstamo.'
+                        'Use POST /prestamos/{id}/eliminar-forzado/ (administrador o supervisor) '
+                        'para anular los cobros y eliminar el préstamo, o anule cobros en Historial de pagos.'
                     ),
                 }
             )
@@ -1313,173 +1541,155 @@ class PrestamoViewSet(viewsets.ModelViewSet):
                 {
                     'detail': (
                         f'No se puede eliminar el préstamo: tiene {num_servicios} servicio(s) asociado(s). '
-                        'Elimine los servicios antes de borrar el préstamo.'
+                        'Use POST /prestamos/{id}/eliminar-forzado/ (administrador o supervisor) '
+                        'para eliminar servicios y el préstamo.'
                     ),
                 }
             )
         instance.delete()
 
+    @action(detail=True, methods=['post'], url_path='eliminar-forzado')
+    def eliminar_forzado(self, request, pk=None):
+        """Anula cobros vigentes, borra pagos/servicios y elimina el préstamo (irreversible)."""
+        actor = usuario_operativo_desde_request(request)
+        if actor is None or actor.rol not in WRITE_ANULAR_PAGOS:
+            return Response(
+                {'detail': 'Solo administrador o supervisor pueden eliminar un préstamo con cobros.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        motivo = (request.data.get('motivo') or '').strip()
+        if not motivo:
+            return Response(
+                {'motivo': 'Indique el motivo de la eliminación forzada.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        prestamo = self.get_object()
+        id_prestamo = prestamo.id_prestamo
+        numero = prestamo.numero_prestamo
+        pagos_anulados: list[int] = []
+
+        with transaction.atomic():
+            Prestamo.objects.select_for_update().filter(pk=id_prestamo).first()
+            while True:
+                pago = (
+                    filtrar_pagos_vigentes(Pago.objects.filter(id_prestamo_id=id_prestamo))
+                    .order_by('id_pago')
+                    .first()
+                )
+                if pago is None:
+                    break
+                grupo = anular_grupo_cobro(pago, actor, motivo)
+                pagos_anulados.extend(pg.id_pago for pg in grupo)
+
+            pagos_borrados, _ = Pago.objects.filter(id_prestamo_id=id_prestamo).delete()
+            servicios_borrados, _ = Servicio.objects.filter(id_prestamo_id=id_prestamo).delete()
+            prestamo.delete()
+
+        return Response(
+            {
+                'detail': 'Préstamo eliminado. Se anularon los cobros vigentes y se borraron pagos/servicios.',
+                'id_prestamo': id_prestamo,
+                'numero_prestamo': numero,
+                'pagos_anulados': pagos_anulados,
+                'pagos_borrados': pagos_borrados,
+                'servicios_borrados': servicios_borrados,
+                'motivo': motivo,
+            },
+            status=status.HTTP_200_OK,
+        )
+
     @action(detail=False, methods=['get'], url_path='reporte-integracion')
     def reporte_integracion(self, request):
         """Listado agregado tipo reporte de cartera: cuota planificada y saldo desde último pago."""
-        # Sin filter_queryset: django-filter espera estado=valor_único; aquí pasamos estado=a,b,c
-        # y produciría 400. Solo usamos queryset base del viewset + filtros manuales siguientes.
-        qs = self.get_queryset()
-
-        estado_param = (request.query_params.get('estado') or '').strip()
-        if estado_param:
-            lista = [e.strip() for e in estado_param.split(',') if e.strip()]
-            if lista:
-                qs = qs.filter(estado__in=lista)
-
-        zona_param = (request.query_params.get('id_zona') or '').strip()
-        if zona_param.isdigit():
-            qs = qs.filter(id_zona_id=int(zona_param))
-
-        cartera_param = (request.query_params.get('id_cartera') or '').strip()
-        if cartera_param.isdigit():
-            qs = qs.filter(id_cartera_id=int(cartera_param))
-
-        id_cliente_param = (request.query_params.get('id_cliente') or '').strip()
-        if id_cliente_param.isdigit():
-            qs = qs.filter(id_cliente_id=int(id_cliente_param))
-
-        id_prestamo_param = (request.query_params.get('id_prestamo') or '').strip()
-        if id_prestamo_param.isdigit():
-            qs = qs.filter(id_prestamo=int(id_prestamo_param))
-
-        fd = (request.query_params.get('fecha_entrega_desde') or '').strip()
-        if fd:
-            qs = qs.filter(fecha_entrega__gte=fd)
-        fh = (request.query_params.get('fecha_entrega_hasta') or '').strip()
-        if fh:
-            qs = qs.filter(fecha_entrega__lte=fh)
-
-        forma_pago_param = (request.query_params.get('forma_pago') or '').strip()
-        if forma_pago_param:
-            valid_forma = {'semanal', 'mensual', 'quincenal'}
-            if forma_pago_param in valid_forma:
-                qs = qs.filter(forma_pago=forma_pago_param)
-
-        prestamos_qs = qs.order_by('numero_prestamo')
-        ids = list(prestamos_qs.values_list('id_prestamo', flat=True))
-        fecha_reporte = timezone.localdate().isoformat()
-        generado_en = ahora_local_iso()
-
-        if not ids:
-            resumen_vacio = {
-                'clientes_distintos': 0,
-                'prestamos': 0,
-                'total_cuotas_plazo': 0,
-                'total_saldo_inicial': '0',
-                'total_saldo_actual': '0',
-                'total_cuota': '0',
+        datos = _recolectar_reporte_integracion(self, request)
+        if datos.get('all_rows'):
+            return Response(
+                {
+                    'fecha_reporte': datos['fecha_reporte'],
+                    'generado_en': datos['generado_en'],
+                    'filas': datos['filas'],
+                    'resumen': datos['resumen'],
+                }
+            )
+        return Response(
+            {
+                'fecha_reporte': datos['fecha_reporte'],
+                'generado_en': datos['generado_en'],
+                'count': datos.get('count', 0),
+                'page': datos.get('page', 1),
+                'next': datos.get('next'),
+                'previous': datos.get('previous'),
+                'filas': datos['filas'],
+                'resumen': datos['resumen'],
             }
+        )
+
+    @action(detail=False, methods=['get'], url_path='hoja-cobros-pdf')
+    def hoja_cobros_pdf(self, request):
+        """Descarga PDF con el listado de la hoja de cobros (cartera obligatoria).
+
+        vista=seguimiento → PDF cobrador (préstamo, cliente, estado, cuota, cobrado hoy).
+        vista=listado → PDF simple (préstamo, cliente, estado, cuota, espacio en blanco).
+        Sin vista → PDF landscape completo (hoja clásica).
+        """
+        cartera_param = (request.query_params.get('id_cartera') or '').strip()
+        if not cartera_param.isdigit():
             return Response(
-                {
-                    'fecha_reporte': fecha_reporte,
-                    'generado_en': generado_en,
-                    'count': 0,
-                    'page': 1,
-                    'next': None,
-                    'previous': None,
-                    'filas': [],
-                    'resumen': resumen_vacio,
-                }
+                {'detail': 'Seleccione una cartera (id_cartera) para descargar la hoja.'},
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
-        (
-            primera_cuota,
-            cuotas_por_prestamo,
-            cuotas_pagadas_nums,
-            _ultimo_pago_por,
-            abonado_por_prestamo,
-            abonado_cuota_por_prestamo,
-        ) = _cargar_auxiliar_reporte_integracion(ids)
+        vista = (request.query_params.get('vista') or '').strip().lower()
+        es_seguimiento = vista in ('seguimiento', 'cobrador', 'mobile')
+        es_listado = vista in ('listado', 'simple', 'web')
 
-        clientes_ids: set[int] = set()
-        sum_inicial = Decimal('0')
-        sum_cuota = Decimal('0')
-        sum_actual = Decimal('0')
-        sum_plazo = 0
-        for p in prestamos_qs.iterator(chunk_size=200):
-            clientes_ids.add(p.id_cliente_id)
-            plan_rows = cuotas_por_prestamo.get(p.id_prestamo, [])
-            paid_nums = cuotas_pagadas_nums.get(p.id_prestamo, set())
-            abonado_cuota = abonado_cuota_por_prestamo.get(p.id_prestamo, {})
-            saldo_inicial, cuota_pl, saldo_act = _montos_reporte_integracion(
-                p,
-                primera_cuota,
-                plan_rows,
-                paid_nums,
-                abonado_por_prestamo.get(p.id_prestamo, Decimal('0.00')),
-                abonado_por_cuota=abonado_cuota if plan_rows else None,
-            )
-            sum_inicial += saldo_inicial
-            sum_cuota += cuota_pl
-            sum_actual += saldo_act
-            sum_plazo += int(p.plazo or 0)
-
-        resumen = {
-            'clientes_distintos': len(clientes_ids),
-            'prestamos': len(ids),
-            'total_cuotas_plazo': sum_plazo,
-            'total_saldo_inicial': str(round_money(sum_inicial)),
-            'total_saldo_actual': str(round_money(sum_actual)),
-            'total_cuota': str(round_money(sum_cuota)),
-        }
-
-        all_rows = (request.query_params.get('all') or '').strip().lower() in ('1', 'true', 'yes')
-
-        def _build_filas(prestamos_page: list[Prestamo]) -> list[dict]:
-            return [
-                _fila_reporte_integracion(
-                    p,
-                    primera_cuota,
-                    cuotas_por_prestamo,
-                    cuotas_pagadas_nums,
-                    abonado_por_prestamo,
-                    abonado_cuota_por_prestamo,
-                )
-                for p in prestamos_page
-            ]
-
-        if all_rows:
+        datos = _recolectar_reporte_integracion(self, request, force_all=True)
+        filas = datos.get('filas') or []
+        if not filas and not es_seguimiento and not es_listado:
             return Response(
-                {
-                    'fecha_reporte': fecha_reporte,
-                    'generado_en': generado_en,
-                    'filas': _build_filas(list(prestamos_qs)),
-                    'resumen': resumen,
-                }
+                {'detail': 'No hay préstamos para los filtros seleccionados.'},
+                status=status.HTTP_404_NOT_FOUND,
             )
 
-        pagination = ReporteIntegracionPagination()
-        page_size = pagination.get_page_size(request) or pagination.page_size
-        paginator = Paginator(prestamos_qs, page_size)
-        page_number = request.query_params.get(pagination.page_query_param, 1)
-        page_obj = paginator.get_page(page_number)
+        cartera = Cartera.objects.filter(pk=int(cartera_param)).only('nombre').first()
+        if filas:
+            cartera_etiqueta = (filas[0].get('cartera_nombre') or '').strip()
+        else:
+            cartera_etiqueta = ''
+        if not cartera_etiqueta and cartera:
+            cartera_etiqueta = (cartera.nombre or '').strip()
+        if not cartera_etiqueta:
+            cartera_etiqueta = f'Cartera {cartera_param}'
+        datos['cartera_etiqueta'] = cartera_etiqueta
 
-        payload = {
-            'fecha_reporte': fecha_reporte,
-            'generado_en': generado_en,
-            'count': paginator.count,
-            'page': page_obj.number,
-            'next': None,
-            'previous': None,
-            'filas': _build_filas(list(page_obj.object_list)),
-            'resumen': resumen,
-        }
-        if page_obj.has_next():
-            q = request.query_params.copy()
-            q[pagination.page_query_param] = str(page_obj.next_page_number())
-            payload['next'] = request.build_absolute_uri(f'{request.path}?{q.urlencode()}')
-        if page_obj.has_previous():
-            q = request.query_params.copy()
-            q[pagination.page_query_param] = str(page_obj.previous_page_number())
-            payload['previous'] = request.build_absolute_uri(f'{request.path}?{q.urlencode()}')
+        if es_seguimiento:
+            pdf_content = exportar_hoja_cobros_seguimiento_pdf(datos)
+        elif es_listado:
+            pdf_content = exportar_hoja_cobros_listado_pdf(datos)
+        else:
+            pdf_content = exportar_hoja_cobros_pdf(datos)
+        filename = nombre_archivo_hoja_cobros(datos)
 
-        return Response(payload)
+        actor = Usuario.objects.filter(correo=request.user.email).only('id_usuario').first()
+        with transaction.atomic():
+            ultima = (
+                HojaCobroImpresion.objects.select_for_update()
+                .order_by('-numero_impresion')
+                .only('numero_impresion')
+                .first()
+            )
+            siguiente = (ultima.numero_impresion if ultima else 0) + 1
+            HojaCobroImpresion.objects.create(
+                numero_impresion=siguiente,
+                generado_por=actor,
+                total_registros=len(filas),
+            )
+
+        response = HttpResponse(pdf_content, content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        return response
 
     @action(detail=False, methods=['post'], url_path='registrar-impresion-hoja-cobros')
     def registrar_impresion_hoja_cobros(self, request):
@@ -1535,8 +1745,10 @@ def _rango_periodo_historial_pagos(
     fecha_str: str | None,
     mes_str: str | None,
     anio_str: str | None,
+    fecha_inicio_str: str | None = None,
+    fecha_fin_str: str | None = None,
 ) -> tuple[date, date]:
-    """Devuelve (inicio, fin) inclusive para modo día, mes o año."""
+    """Devuelve (inicio, fin) inclusive para modo día, semana, mes o año."""
     hoy = timezone.localdate()
     modo_norm = (modo or 'dia').strip().lower()
     try:
@@ -1549,6 +1761,31 @@ def _rango_periodo_historial_pagos(
         if parsed is None:
             raise ValidationError({'fecha': 'Indique una fecha válida (AAAA-MM-DD).'})
         return parsed, parsed
+
+    if modo_norm in ('semana', 'semanal'):
+        # Si envían rango explícito (fecha_inicio / fecha_fin), se usa tal cual.
+        inicio_raw = (fecha_inicio_str or '').strip()
+        fin_raw = (fecha_fin_str or '').strip()
+        if inicio_raw or fin_raw:
+            inicio = parse_date(inicio_raw)
+            fin = parse_date(fin_raw)
+            if inicio is None:
+                raise ValidationError({'fecha_inicio': 'Indique una fecha de inicio válida (AAAA-MM-DD).'})
+            if fin is None:
+                raise ValidationError({'fecha_fin': 'Indique una fecha final válida (AAAA-MM-DD).'})
+            if fin < inicio:
+                raise ValidationError({'fecha_fin': 'La fecha final no puede ser anterior a la de inicio.'})
+            return inicio, fin
+        # Fallback: semana lun–dom de la fecha de referencia (o hoy).
+        ref = hoy
+        if (fecha_str or '').strip():
+            parsed = parse_date(fecha_str.strip())
+            if parsed is None:
+                raise ValidationError({'fecha': 'Indique una fecha válida (AAAA-MM-DD).'})
+            ref = parsed
+        inicio = ref - timedelta(days=ref.weekday())
+        fin = inicio + timedelta(days=6)
+        return inicio, fin
 
     if modo_norm == 'mes':
         try:
@@ -1563,7 +1800,7 @@ def _rango_periodo_historial_pagos(
     if modo_norm == 'anio':
         return date(anio, 1, 1), date(anio, 12, 31)
 
-    raise ValidationError({'modo': 'Use modo=dia, modo=mes o modo=anio.'})
+    raise ValidationError({'modo': 'Use modo=dia, modo=semana, modo=mes o modo=anio.'})
 
 
 def _etiqueta_usuario_auditoria(usuario_id: int | None, nombre: str | None) -> str:
@@ -1574,14 +1811,23 @@ def _etiqueta_usuario_auditoria(usuario_id: int | None, nombre: str | None) -> s
 
 
 def _datos_historial_pagos_cobros(request) -> dict:
-    """Arma el historial de pagos por día, mes o año."""
+    """Arma el historial de pagos por día, semana, mes o año."""
     modo = request.query_params.get('modo', 'dia')
     fecha_str = request.query_params.get('fecha')
+    fecha_inicio_str = request.query_params.get('fecha_inicio')
+    fecha_fin_str = request.query_params.get('fecha_fin')
     mes_str = request.query_params.get('mes')
     anio_str = request.query_params.get('anio')
     id_cartera_raw = request.query_params.get('id_cartera')
 
-    inicio, fin = _rango_periodo_historial_pagos(modo, fecha_str, mes_str, anio_str)
+    inicio, fin = _rango_periodo_historial_pagos(
+        modo,
+        fecha_str,
+        mes_str,
+        anio_str,
+        fecha_inicio_str,
+        fecha_fin_str,
+    )
 
     qs = (
         filtrar_pagos_vigentes(Pago.objects)
@@ -1665,7 +1911,9 @@ def _datos_historial_pagos_cobros(request) -> dict:
                 'numero_prestamo': prestamo.numero_prestamo if prestamo else '',
                 'nombre_cliente': cliente.nombre if cliente else '',
                 'dni_cliente': cliente.dni if cliente else '',
+                'id_cartera': cartera.id_cartera if cartera else None,
                 'cartera_nombre': cartera.nombre if cartera else '',
+                'cartera_dia_cobro': cartera.dia_cobro if cartera else '',
             }
         )
 
@@ -1695,7 +1943,11 @@ def _respuesta_historial_pagos_cobros(request) -> Response:
 class PagoViewSet(viewsets.ModelViewSet):
     """CRUD de pagos asociados a prestamos."""
 
-    queryset = Pago.objects.select_related('id_prestamo').all()
+    queryset = Pago.objects.select_related(
+        'id_prestamo',
+        'id_prestamo__id_cliente',
+        'registrado_por',
+    ).all()
     serializer_class = PagoSerializer
     permission_classes = AUTH_PERMISSION_CLASSES
     required_write_roles = WRITE_COBROS
@@ -1761,6 +2013,33 @@ class PagoViewSet(viewsets.ModelViewSet):
         response = HttpResponse(pdf_content, content_type='application/pdf')
         response['Content-Disposition'] = (
             f'inline; filename="factura-{folio}-{ticket_format}mm.pdf"'
+        )
+        return response
+
+    @action(detail=True, methods=['get'], url_path='factura-png')
+    def factura_png(self, request, pk=None):
+        """Retorna el recibo como PNG (PDF convertido) para impresoras térmicas Bluetooth."""
+        pago = _resolver_pago_factura(self.get_object())
+        config = obtener_configuracion_facturacion()
+        ticket_format = request.query_params.get('ticket', '').strip()
+        if ticket_format not in ('58', '80'):
+            ticket_format = (
+                config.formato_ticket
+                if config.formato_ticket in ('58', '80')
+                else '58'
+            )
+        pdf_content = _build_pago_invoice_pdf(pago, ticket_format=ticket_format)
+        try:
+            png_content = pdf_ticket_a_png(pdf_content, ticket_format=ticket_format)
+        except Exception as exc:  # noqa: BLE001 — devolver error API claro al cliente móvil
+            return Response(
+                {'detail': f'No se pudo convertir la factura a imagen: {exc}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        folio = pago.numero_factura or f'F{pago.id_pago:03d}'
+        response = HttpResponse(png_content, content_type='image/png')
+        response['Content-Disposition'] = (
+            f'inline; filename="factura-{folio}-{ticket_format}mm.png"'
         )
         return response
 
