@@ -1117,6 +1117,7 @@ def _fila_reporte_integracion(
     abonado_por_prestamo: dict[int, Decimal],
     abonado_cuota_por_prestamo: dict[int, dict[int, Decimal]],
     cobrado_hoy_por_prestamo: dict[int, Decimal] | None = None,
+    ultimo_pago_por: dict[int, Pago] | None = None,
 ) -> dict:
     plan_rows = cuotas_por_prestamo.get(p.id_prestamo, [])
     paid_nums = cuotas_pagadas_nums.get(p.id_prestamo, set())
@@ -1238,6 +1239,7 @@ def _fila_reporte_integracion(
         'fecha_entrega': p.fecha_entrega.isoformat(),
         'fecha_vencimiento': p.fecha_vencimiento.isoformat(),
         'dias_mora': int(p.dias_mora or 0),
+        'monto': str(round_money(Decimal(p.monto))),
         'saldo_inicial': str(saldo_inicial),
         'cuota': str(cuota_pl),
         'saldo_actual': str(saldo_act),
@@ -1253,6 +1255,19 @@ def _fila_reporte_integracion(
         monto_hoy = round_money(cobrado_hoy_por_prestamo.get(p.id_prestamo, Decimal('0.00')))
     row_data['cobrado_hoy'] = monto_hoy > 0
     row_data['monto_cobrado_hoy'] = str(monto_hoy) if monto_hoy > 0 else ''
+    ultimo = (ultimo_pago_por or {}).get(p.id_prestamo)
+    if ultimo is not None:
+        if ultimo.monto_recibido_cliente is not None:
+            monto_ult = round_money(Decimal(ultimo.monto_recibido_cliente))
+        else:
+            monto_ult = round_money(
+                Decimal(ultimo.capital) + Decimal(ultimo.interes) + Decimal(ultimo.mora)
+            )
+        row_data['fecha_ultimo_pago'] = ultimo.fecha_pago.isoformat()
+        row_data['monto_ultimo_pago'] = str(monto_ult)
+    else:
+        row_data['fecha_ultimo_pago'] = ''
+        row_data['monto_ultimo_pago'] = ''
     row_data.update(sig_fields)
     return row_data
 
@@ -1338,7 +1353,7 @@ def _recolectar_reporte_integracion(viewset, request, *, force_all: bool = False
         primera_cuota,
         cuotas_por_prestamo,
         cuotas_pagadas_nums,
-        _ultimo_pago_por,
+        ultimo_pago_por,
         abonado_por_prestamo,
         abonado_cuota_por_prestamo,
         cobrado_hoy_por_prestamo,
@@ -1390,6 +1405,7 @@ def _recolectar_reporte_integracion(viewset, request, *, force_all: bool = False
                 abonado_por_prestamo,
                 abonado_cuota_por_prestamo,
                 cobrado_hoy_por_prestamo,
+                ultimo_pago_por,
             )
             for p in prestamos_page
         ]
@@ -1895,7 +1911,9 @@ def _datos_historial_pagos_cobros(request) -> dict:
                 'numero_prestamo': prestamo.numero_prestamo if prestamo else '',
                 'nombre_cliente': cliente.nombre if cliente else '',
                 'dni_cliente': cliente.dni if cliente else '',
+                'id_cartera': cartera.id_cartera if cartera else None,
                 'cartera_nombre': cartera.nombre if cartera else '',
+                'cartera_dia_cobro': cartera.dia_cobro if cartera else '',
             }
         )
 
