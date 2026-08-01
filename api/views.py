@@ -1221,6 +1221,13 @@ def _fila_reporte_integracion(
     cartera = p.id_cartera
     cliente = p.id_cliente
 
+    plazo_configurado = int(p.plazo or 0)
+    total_cuotas_plan = len(plan_rows)
+    # Plazo total al crear el crédito (ej. 12 semanas), no cuotas pendientes de cobro.
+    plazo_total = (
+        max(plazo_configurado, total_cuotas_plan) if total_cuotas_plan else plazo_configurado
+    )
+
     row_data = {
         'id_prestamo': p.id_prestamo,
         'numero_prestamo': p.numero_prestamo,
@@ -1248,7 +1255,9 @@ def _fila_reporte_integracion(
         'estado': p.estado,
         'forma_pago': p.forma_pago,
         'sucursal': (p.sucursal or '').strip() or (p.id_zona.nombre if p.id_zona_id else ''),
-        'plazo': int(p.plazo or 0),
+        'plazo': plazo_configurado,
+        'plazo_total': plazo_total,
+        'total_cuotas_plan': total_cuotas_plan,
     }
     monto_hoy = Decimal('0.00')
     if cobrado_hoy_por_prestamo:
