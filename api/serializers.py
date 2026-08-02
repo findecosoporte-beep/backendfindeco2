@@ -12,7 +12,7 @@ from rest_framework import serializers
 from .cobrador_scope import validar_cobro_por_cartera, usuario_operativo_desde_request
 from .core.anulacion_pago import filtrar_pagos_vigentes
 from .core.documento_honduras import normalizar_dni_hn, normalizar_rtn_hn_opcional
-from .core.telefono_honduras import normalizar_telefono_hn_opcional
+from .core.telefono_honduras import normalizar_telefono_hn, normalizar_telefono_hn_opcional
 from .core.cuotas import extract_cuota_numero_from_documento
 from .core.distribucion_pago import (
     CUOTA_PAGADA_TOLERANCIA,
@@ -180,7 +180,7 @@ class UsuarioSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Usuario
-        fields = ('id_usuario', 'nombre', 'rol', 'correo', 'carteras', 'carteras_detalle')
+        fields = ('id_usuario', 'nombre', 'rol', 'correo', 'telefono', 'carteras', 'carteras_detalle')
 
     def get_carteras(self, obj: Usuario) -> list[int]:
         if obj.rol != 'cobrador':
@@ -343,7 +343,7 @@ class UsuarioCobradorCreateSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Usuario
-        fields = ('nombre', 'correo', 'password', 'carteras')
+        fields = ('nombre', 'correo', 'telefono', 'password', 'carteras')
 
     def validate_nombre(self, value: str) -> str:
         t = (value or '').strip()
@@ -362,6 +362,15 @@ class UsuarioCobradorCreateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError('Ya existe una cuenta de acceso con este correo.')
         return v
 
+    def validate_telefono(self, value: str) -> str:
+        try:
+            normalizado = normalizar_telefono_hn(value)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc)) from exc
+        if not normalizado:
+            raise serializers.ValidationError('El teléfono del cobrador es obligatorio.')
+        return normalizado
+
     def validate_carteras(self, value: list[int]) -> list[int]:
         return _validar_carteras_para_cobrador(value)
 
@@ -371,11 +380,13 @@ class UsuarioCobradorCreateSerializer(serializers.ModelSerializer):
         password = validated_data.pop('password')
         nombre = validated_data['nombre']
         correo = validated_data['correo']
+        telefono = validated_data.get('telefono')
         UserModel = get_user_model()
         UserModel.objects.create_user(username=correo, email=correo, password=password)
         usuario = Usuario.objects.create(
             nombre=nombre,
             correo=correo,
+            telefono=telefono,
             rol='cobrador',
             clave='legacy-operativo',
         )
@@ -401,7 +412,7 @@ class UsuarioCobradorUpdateSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Usuario
-        fields = ('nombre', 'correo', 'password', 'carteras')
+        fields = ('nombre', 'correo', 'telefono', 'password', 'carteras')
 
     def validate(self, attrs):
         if self.instance and self.instance.rol != 'cobrador':
@@ -431,6 +442,15 @@ class UsuarioCobradorUpdateSerializer(serializers.ModelSerializer):
         if user_qs.exists():
             raise serializers.ValidationError('Ya existe una cuenta de acceso con este correo.')
         return v
+
+    def validate_telefono(self, value: str) -> str:
+        try:
+            normalizado = normalizar_telefono_hn(value)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc)) from exc
+        if not normalizado:
+            raise serializers.ValidationError('El teléfono del cobrador es obligatorio.')
+        return normalizado
 
     def validate_carteras(self, value: list[int]) -> list[int]:
         usuario_pk = self.instance.pk if self.instance else None

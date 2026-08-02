@@ -1130,12 +1130,14 @@ class RolePermissionIntegrationTestCase(APITestCase):
             'rol': 'cobrador',
             'nombre': 'Pedro Cobrador',
             'correo': 'pedro.cobrador@test.com',
+            'telefono': '98765432',
             'password': 'Secreta123!',
             'carteras': [cartera_a.id_cartera, cartera_b.id_cartera],
         }
         response = self.client.post('/api/v1/usuarios/', data=payload, format='json')
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data['rol'], 'cobrador')
+        self.assertEqual(response.data['telefono'], '98765432')
         self.assertEqual(sorted(response.data['carteras']), sorted([cartera_a.id_cartera, cartera_b.id_cartera]))
         usuario = Usuario.objects.get(correo='pedro.cobrador@test.com')
         self.assertEqual(UsuarioCartera.objects.filter(id_usuario=usuario).count(), 2)
@@ -1149,6 +1151,7 @@ class RolePermissionIntegrationTestCase(APITestCase):
                 'rol': 'cobrador',
                 'nombre': 'Cobrador Uno',
                 'correo': 'cobrador.uno@test.com',
+                'telefono': '99887766',
                 'password': 'Secreta123!',
                 'carteras': [cartera.id_cartera],
             },
@@ -1161,6 +1164,7 @@ class RolePermissionIntegrationTestCase(APITestCase):
                 'rol': 'cobrador',
                 'nombre': 'Cobrador Dos',
                 'correo': 'cobrador.dos@test.com',
+                'telefono': '88776655',
                 'password': 'Secreta123!',
                 'carteras': [cartera.id_cartera],
             },

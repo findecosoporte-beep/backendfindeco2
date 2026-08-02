@@ -77,6 +77,7 @@ class Usuario(models.Model):
     nombre = models.CharField(max_length=100)
     rol = models.CharField(max_length=40, choices=ROL_CHOICES)
     correo = models.EmailField(max_length=100, unique=True, null=True, blank=True)
+    telefono = models.CharField(max_length=20, null=True, blank=True)
     clave = models.CharField(
         max_length=255,
         help_text='DEPRECADO: no usar para autenticación. El acceso es vía Django User + JWT.',

@@ -478,6 +478,7 @@ class MeView(APIView):
                 'rol': actor.rol if actor else None,
                 'nombre_operativo': actor.nombre if actor else None,
                 'id_usuario': actor.id_usuario if actor else None,
+                'telefono': (actor.telefono or '').strip() if actor else None,
                 'carteras': carteras_payload,
             }
         )
