@@ -26,8 +26,52 @@ from .models import (
     Zona,
 )
 from .core.facturacion_sar import formatear_numero_factura_sar
+from .core.prestamo_numero import formatear_consecutivo, max_secuencia_prestamos, siguiente_numeracion_prestamo
 from .estado_cuenta_export import recolectar_datos_estado_cuenta
 from .serializers import PrestamoSerializer
+
+
+class PrestamoNumeroTestCase(TestCase):
+    """Numeración compacta de préstamos (001, 002…)."""
+
+    def test_ignora_numeros_largos_y_prefijos(self):
+        Prestamo.objects.create(
+            numero_prestamo='PR-1734567890123',
+            codigo_prestamo='PR-1734567890123',
+            id_cliente=Cliente.objects.create(nombre='A', dni='0801-2000-00002'),
+            id_usuario=Usuario.objects.create(
+                nombre='U', rol='asesor', correo='u1@test.com', clave='x',
+            ),
+            monto=1000,
+            plazo=12,
+            tasa_interes=5,
+            forma_pago='mensual',
+            forma_desembolso='efectivo',
+            fecha_entrega=date.today(),
+            fecha_vencimiento=date.today(),
+        )
+        Prestamo.objects.create(
+            numero_prestamo='042',
+            codigo_prestamo='042',
+            id_cliente=Cliente.objects.create(nombre='B', dni='0801-2000-00003'),
+            id_usuario=Usuario.objects.create(
+                nombre='V', rol='asesor', correo='u2@test.com', clave='x',
+            ),
+            monto=1000,
+            plazo=12,
+            tasa_interes=5,
+            forma_pago='mensual',
+            forma_desembolso='efectivo',
+            fecha_entrega=date.today(),
+            fecha_vencimiento=date.today(),
+        )
+        self.assertEqual(max_secuencia_prestamos(), 42)
+        self.assertEqual(siguiente_numeracion_prestamo(), '043')
+
+    def test_formatea_tres_digitos(self):
+        self.assertEqual(formatear_consecutivo(1), '001')
+        self.assertEqual(formatear_consecutivo(999), '999')
+        self.assertEqual(formatear_consecutivo(1000), '1000')
 
 
 class PrestamoSerializerTestCase(TestCase):

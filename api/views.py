@@ -73,6 +73,7 @@ from .core.prestamo_calc import (
     plan_totales_desde_condiciones,
 )
 from .core.anulacion_pago import anular_grupo_cobro, filtrar_pagos_vigentes
+from .core.prestamo_numero import numeracion_prestamo_response
 from .core.distribucion_pago import (
     abonado_por_cuota_desde_pagos,
     cuotas_cubiertas_por_pago_acumulado,
@@ -1471,12 +1472,13 @@ class PrestamoViewSet(viewsets.ModelViewSet):
     serializer_class = PrestamoSerializer
     permission_classes = AUTH_PERMISSION_CLASSES
     required_write_roles = WRITE_ADMIN
-    search_fields = ['numero_prestamo', 'id_cliente__nombre', 'producto', 'estado']
+    search_fields = ['codigo_prestamo', 'numero_prestamo', 'id_cliente__nombre', 'producto', 'estado']
     filterset_fields = [
         'estado',
         'forma_pago',
         'id_cliente',
         'id_usuario',
+        'codigo_prestamo',
         'numero_prestamo',
         'id_zona',
         'id_cartera',
@@ -1512,26 +1514,9 @@ class PrestamoViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'], url_path='siguiente-numero')
     def siguiente_numero(self, request):
-        """Siguiente número de préstamo según el mayor consecutivo numérico existente."""
-        prefijo = 'PR-'
-        ancho = 5
-        max_seq = 0
-        qs = self.filter_queryset(self.get_queryset()).only('numero_prestamo')
-        for numero in qs.values_list('numero_prestamo', flat=True).iterator(chunk_size=500):
-            texto = (numero or '').strip()
-            m = re.match(r'^(.*?)(\d+)$', texto)
-            if not m:
-                continue
-            seq = int(m.group(2))
-            if seq > max_seq:
-                max_seq = seq
-                prefijo = m.group(1) or ''
-                ancho = len(m.group(2))
-        return Response(
-            {
-                'numero_prestamo': f'{prefijo}{str(max_seq + 1).zfill(ancho)}',
-            }
-        )
+        """Siguiente código y número de préstamo (misma secuencia consecutiva)."""
+        qs = self.filter_queryset(self.get_queryset()).only('codigo_prestamo', 'numero_prestamo')
+        return Response(numeracion_prestamo_response(qs))
 
     def perform_destroy(self, instance):
         num_pagos = Pago.objects.filter(id_prestamo=instance).count()

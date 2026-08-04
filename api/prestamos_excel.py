@@ -25,6 +25,7 @@ FORMA_PAGO_LABELS = {
 }
 
 COLUMNAS: tuple[tuple[str, str], ...] = (
+    ('codigo_prestamo', 'Código préstamo'),
     ('numero_prestamo', 'Nº préstamo'),
     ('cliente', 'Cliente'),
     ('dni_cliente', 'DNI cliente'),
@@ -59,6 +60,7 @@ def _fila_prestamo(prestamo: Prestamo) -> list:
     cartera = prestamo.id_cartera
     zona = prestamo.id_zona
     return [
+        _texto(prestamo.codigo_prestamo) or _texto(prestamo.numero_prestamo) or str(prestamo.id_prestamo),
         _texto(prestamo.numero_prestamo) or str(prestamo.id_prestamo),
         _texto(cliente.nombre) if cliente else '',
         _texto(cliente.dni) if cliente else '',

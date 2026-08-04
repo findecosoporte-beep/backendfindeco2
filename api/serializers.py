@@ -521,6 +521,8 @@ class PrestamoSerializer(serializers.ModelSerializer):
         fields = '__all__'
         extra_kwargs = {
             'fecha_vencimiento': {'required': False},
+            'codigo_prestamo': {'required': False},
+            'numero_prestamo': {'required': False},
             'creado_en': {'read_only': True},
             'creado_por': {'read_only': True},
             'modificado_por': {'read_only': True},
@@ -551,6 +553,44 @@ class PrestamoSerializer(serializers.ModelSerializer):
         if getattr(cartera, 'zona_id', None):
             attrs['id_zona'] = cartera.zona
         attrs['sucursal'] = (getattr(cartera, 'nombre', None) or '').strip() or attrs.get('sucursal')
+        return attrs
+
+    def _sincronizar_numeracion_prestamo(self, attrs: dict) -> dict:
+        instance = getattr(self, 'instance', None)
+        codigo = attrs.get('codigo_prestamo')
+        numero = attrs.get('numero_prestamo')
+        codigo_txt = (codigo or '').strip() if codigo is not None else None
+        numero_txt = (numero or '').strip() if numero is not None else None
+
+        if instance is None:
+            if not codigo_txt and not numero_txt:
+                from .core.prestamo_numero import siguiente_numeracion_prestamo
+
+                valor = siguiente_numeracion_prestamo()
+                attrs['codigo_prestamo'] = valor
+                attrs['numero_prestamo'] = valor
+            elif codigo_txt and numero_txt and codigo_txt != numero_txt:
+                raise serializers.ValidationError(
+                    'El código y el número de préstamo deben ser iguales (misma secuencia).'
+                )
+            else:
+                valor = codigo_txt or numero_txt or ''
+                attrs['codigo_prestamo'] = valor
+                attrs['numero_prestamo'] = valor
+            return attrs
+
+        actual_codigo = (instance.codigo_prestamo or '').strip()
+        actual_numero = (instance.numero_prestamo or '').strip()
+        nuevo_codigo = codigo_txt if codigo is not None else actual_codigo
+        nuevo_numero = numero_txt if numero is not None else actual_numero
+        if nuevo_codigo and nuevo_numero and nuevo_codigo != nuevo_numero:
+            raise serializers.ValidationError(
+                'El código y el número de préstamo deben ser iguales (misma secuencia).'
+            )
+        valor = nuevo_codigo or nuevo_numero
+        if valor:
+            attrs['codigo_prestamo'] = valor
+            attrs['numero_prestamo'] = valor
         return attrs
 
     def validate(self, attrs):
@@ -617,7 +657,7 @@ class PrestamoSerializer(serializers.ModelSerializer):
                 )
             if cliente is not None:
                 _validar_cliente_para_nuevo_prestamo(cliente)
-        return attrs
+        return self._sincronizar_numeracion_prestamo(attrs)
 
     @transaction.atomic
     def create(self, validated_data):

@@ -215,6 +215,7 @@ class Prestamo(models.Model):
     )
 
     id_prestamo = models.AutoField(primary_key=True)
+    codigo_prestamo = models.CharField(max_length=20, unique=True)
     numero_prestamo = models.CharField(max_length=20, unique=True)
     sucursal = models.CharField(max_length=100, null=True, blank=True)
     id_zona = models.ForeignKey(

@@ -65,9 +65,9 @@ class UsuarioAdmin(admin.ModelAdmin):
 class PrestamoAdmin(admin.ModelAdmin):
     """Configuracion admin de prestamos."""
 
-    list_display = ('id_prestamo', 'numero_prestamo', 'id_cliente', 'estado', 'monto', 'fecha_vencimiento')
+    list_display = ('id_prestamo', 'codigo_prestamo', 'numero_prestamo', 'id_cliente', 'estado', 'monto', 'fecha_vencimiento')
     list_filter = ('estado', 'forma_pago', 'forma_desembolso')
-    search_fields = ('numero_prestamo', 'id_cliente__nombre')
+    search_fields = ('codigo_prestamo', 'numero_prestamo', 'id_cliente__nombre')
 
 
 @admin.register(Pago)
