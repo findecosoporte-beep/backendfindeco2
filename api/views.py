@@ -1514,9 +1514,8 @@ class PrestamoViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'], url_path='siguiente-numero')
     def siguiente_numero(self, request):
-        """Siguiente código y número de préstamo (misma secuencia consecutiva)."""
-        qs = self.filter_queryset(self.get_queryset()).only('codigo_prestamo', 'numero_prestamo')
-        return Response(numeracion_prestamo_response(qs))
+        """Siguiente código y número de préstamo (secuencia global, no filtrada por cartera)."""
+        return Response(numeracion_prestamo_response(Prestamo.objects.all()))
 
     def perform_destroy(self, instance):
         num_pagos = Pago.objects.filter(id_prestamo=instance).count()
