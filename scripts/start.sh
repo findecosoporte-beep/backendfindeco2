@@ -1,15 +1,15 @@
-#!/usr/bin/env sh
-set -eu
+#!/usr/bin/env bash
+set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-# Railway: forzar producción (evita DisallowedHost si el panel deja development)
-if [ -n "${RAILWAY_ENVIRONMENT:-}" ]; then
+# Railway: forzar produccion (evita DisallowedHost si el panel deja development)
+if [[ -n "${RAILWAY_ENVIRONMENT:-}" ]]; then
   export DJANGO_ENV=production
   export DJANGO_DEBUG=false
   export DJANGO_SECURE_SSL_REDIRECT=false
   _domain="${RAILWAY_PUBLIC_DOMAIN:-}"
-  if [ -n "$_domain" ]; then
+  if [[ -n "$_domain" ]]; then
     export ALLOWED_HOSTS="${_domain},.up.railway.app"
   else
     export ALLOWED_HOSTS=".up.railway.app"
