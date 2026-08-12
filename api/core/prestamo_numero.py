@@ -1,4 +1,4 @@
-"""Consecutivo compacto compartido para codigo_prestamo y numero_prestamo."""
+"""Consecutivo compartido para codigo_prestamo y numero_prestamo (formato PR-0001)."""
 
 from __future__ import annotations
 
@@ -8,18 +8,21 @@ from django.db.models import QuerySet
 
 from api.models import Prestamo
 
-ANCHO_COMPACTO = 3
-MAX_DIGITOS = 4
+PREFIJO = 'PR-'
+ANCHO = 4
 MAX_VALOR = 9999
-_REGEX_COMPACTO = re.compile(r'^\d{1,4}$')
+_REGEX_DIGITOS_FINAL = re.compile(r'^(.*?)(\d+)$')
 
 
-def _secuencia_compacta(texto: str | None) -> int | None:
-    """Solo cuenta códigos cortos puros (001, 12, 999). Ignora PR-… o timestamps."""
+def _secuencia_desde_texto(texto: str | None) -> int | None:
+    """Extrae el sufijo numérico (PR-0001 → 1, 042 → 42). Ignora timestamps enormes."""
     valor = (texto or '').strip()
-    if not _REGEX_COMPACTO.match(valor):
+    if not valor:
         return None
-    seq = int(valor)
+    coincidencia = _REGEX_DIGITOS_FINAL.match(valor)
+    if not coincidencia:
+        return None
+    seq = int(coincidencia.group(2))
     if seq <= 0 or seq > MAX_VALOR:
         return None
     return seq
@@ -31,17 +34,14 @@ def max_secuencia_prestamos(qs: QuerySet[Prestamo] | None = None) -> int:
     max_seq = 0
     for campo in ('codigo_prestamo', 'numero_prestamo'):
         for valor in qs.values_list(campo, flat=True).iterator(chunk_size=500):
-            seq = _secuencia_compacta(valor)
+            seq = _secuencia_desde_texto(valor)
             if seq is not None and seq > max_seq:
                 max_seq = seq
     return max_seq
 
 
 def formatear_consecutivo(seq: int) -> str:
-    """001–999 con ceros; a partir de 1000 sin relleno (evita números enormes)."""
-    if seq < 1000:
-        return str(seq).zfill(ANCHO_COMPACTO)
-    return str(seq)
+    return f'{PREFIJO}{str(seq).zfill(ANCHO)}'
 
 
 def siguiente_numeracion_prestamo(qs: QuerySet[Prestamo] | None = None) -> str:

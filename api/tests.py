@@ -32,9 +32,9 @@ from .serializers import PrestamoSerializer
 
 
 class PrestamoNumeroTestCase(TestCase):
-    """Numeración compacta de préstamos (001, 002…)."""
+    """Numeración de préstamos con prefijo PR- (PR-0001, PR-0002…)."""
 
-    def test_ignora_numeros_largos_y_prefijos(self):
+    def test_ignora_timestamps_y_usa_mayor_consecutivo(self):
         Prestamo.objects.create(
             numero_prestamo='PR-1734567890123',
             codigo_prestamo='PR-1734567890123',
@@ -51,8 +51,8 @@ class PrestamoNumeroTestCase(TestCase):
             fecha_vencimiento=date.today(),
         )
         Prestamo.objects.create(
-            numero_prestamo='042',
-            codigo_prestamo='042',
+            numero_prestamo='PR-0042',
+            codigo_prestamo='PR-0042',
             id_cliente=Cliente.objects.create(nombre='B', dni='0801-2000-00003'),
             id_usuario=Usuario.objects.create(
                 nombre='V', rol='asesor', correo='u2@test.com', clave='x',
@@ -66,12 +66,11 @@ class PrestamoNumeroTestCase(TestCase):
             fecha_vencimiento=date.today(),
         )
         self.assertEqual(max_secuencia_prestamos(), 42)
-        self.assertEqual(siguiente_numeracion_prestamo(), '043')
+        self.assertEqual(siguiente_numeracion_prestamo(), 'PR-0043')
 
-    def test_formatea_tres_digitos(self):
-        self.assertEqual(formatear_consecutivo(1), '001')
-        self.assertEqual(formatear_consecutivo(999), '999')
-        self.assertEqual(formatear_consecutivo(1000), '1000')
+    def test_formatea_con_prefijo(self):
+        self.assertEqual(formatear_consecutivo(1), 'PR-0001')
+        self.assertEqual(formatear_consecutivo(9999), 'PR-9999')
 
 
 class PrestamoSerializerTestCase(TestCase):
