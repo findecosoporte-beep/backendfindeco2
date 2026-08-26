@@ -363,6 +363,10 @@ def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
     y -= 5.5 * mm
 
     row('# PRESTAMO', str(prestamo.numero_prestamo or prestamo.id_prestamo), body, True, 4.3)
+    if prestamo.fecha_entrega:
+        row('FECHA ENTREGA', formato_fecha_hn(prestamo.fecha_entrega), body, False, 4.3)
+    if prestamo.fecha_vencimiento:
+        row('FECHA VENCIMIENTO', formato_fecha_hn(prestamo.fecha_vencimiento), body, False, 4.3)
     row('COBRADOR', _truncar_texto_ancho_pdf(pdf, cobrador.upper(), 'Helvetica', body, right - left - 28 * mm), body, False, 4.3)
     row('TELEFONOS', telefonos, body, False, 4.6)
     sep()
@@ -1813,6 +1817,7 @@ def _datos_historial_pagos_cobros(request) -> dict:
     mes_str = request.query_params.get('mes')
     anio_str = request.query_params.get('anio')
     id_cartera_raw = request.query_params.get('id_cartera')
+    registrado_por_raw = request.query_params.get('registrado_por')
 
     inicio, fin = _rango_periodo_historial_pagos(
         modo,
@@ -1837,6 +1842,17 @@ def _datos_historial_pagos_cobros(request) -> dict:
     qs = filtrar_pagos_por_cobrador(qs, request)
 
     cartera_etiqueta = 'Todas las carteras'
+    cobrador_etiqueta = 'Todos los cobradores'
+    if registrado_por_raw:
+        try:
+            registrado_por_id = int(registrado_por_raw)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError({'registrado_por': 'Cobrador inválido.'}) from exc
+        qs = qs.filter(registrado_por_id=registrado_por_id)
+        cobrador = Usuario.objects.filter(pk=registrado_por_id).only('nombre').first()
+        if cobrador:
+            cobrador_etiqueta = (cobrador.nombre or '').strip() or f'Usuario #{registrado_por_id}'
+
     if id_cartera_raw:
         try:
             id_cartera = int(id_cartera_raw)
@@ -1920,6 +1936,7 @@ def _datos_historial_pagos_cobros(request) -> dict:
         'fecha_fin': fin.isoformat(),
         'generado_en': ahora_local_iso(),
         'cartera_etiqueta': cartera_etiqueta,
+        'cobrador_etiqueta': cobrador_etiqueta,
         'filas': filas,
         'resumen': {
             'registros': len(filas),

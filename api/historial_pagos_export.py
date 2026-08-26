@@ -142,7 +142,7 @@ def exportar_historial_pagos_xlsx(datos: dict) -> bytes:
     header_font = Font(bold=True, color='FFFFFF')
 
     ws.append(['FINDECO — Historial de pagos'])
-    ws.append([f"Cartera: {datos.get('cartera_etiqueta', 'Todas')}"])
+    ws.append([f"Cobrador: {datos.get('cobrador_etiqueta') or datos.get('cartera_etiqueta', 'Todos')}"])
     ws.append([f"Periodo: {_periodo_legible(datos)}"])
     ws.append([f"Generado: {_formato_generado(datos.get('generado_en'))}"])
     ws.append([])
@@ -266,7 +266,10 @@ def exportar_historial_pagos_pdf(datos: dict) -> bytes:
     story.extend(
         [
             Paragraph('FINDECO — Historial de pagos', title_style),
-            Paragraph(f"Cartera: {datos.get('cartera_etiqueta', 'Todas')}", meta_style),
+            Paragraph(
+                f"Cobrador: {datos.get('cobrador_etiqueta') or datos.get('cartera_etiqueta', 'Todos')}",
+                meta_style,
+            ),
             Paragraph(f"Periodo: {_periodo_legible(datos)}", meta_style),
             Paragraph(f"Generado: {_formato_generado(datos.get('generado_en'))}", meta_style),
             Spacer(1, 8),
