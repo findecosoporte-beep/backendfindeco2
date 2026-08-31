@@ -261,10 +261,6 @@ def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
         cobrador = (pago.registrado_por.nombre or '').strip()
     if not cobrador:
         cobrador = (prestamo.asesor or '').strip() or 'N/A'
-    telefonos = (cliente.telefono or '').strip() or '—'
-    if (cliente.referencia_telefono or '').strip():
-        telefonos = f'{telefonos} - {cliente.referencia_telefono.strip()}'
-
     x0 = 0
     margin = 3.2 * mm if is_80mm else 2.8 * mm
     left = x0 + margin
@@ -363,12 +359,10 @@ def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
     y -= 5.5 * mm
 
     row('# PRESTAMO', str(prestamo.numero_prestamo or prestamo.id_prestamo), body, True, 4.3)
-    if prestamo.fecha_entrega:
-        row('FECHA ENTREGA', formato_fecha_hn(prestamo.fecha_entrega), body, False, 4.3)
     if prestamo.fecha_vencimiento:
         row('FECHA VENCIMIENTO', formato_fecha_hn(prestamo.fecha_vencimiento), body, False, 4.3)
     row('COBRADOR', _truncar_texto_ancho_pdf(pdf, cobrador.upper(), 'Helvetica', body, right - left - 28 * mm), body, False, 4.3)
-    row('TELEFONOS', telefonos, body, False, 4.6)
+    row('FECHA DE ENTREGA', formato_fecha_hn(prestamo.fecha_entrega), body, False, 4.6)
     sep()
 
     row('VENCIMIENTO', formato_fecha_hn(ctx['vencimiento']), body, False, 4.3)
