@@ -4,6 +4,8 @@ import os
 from datetime import timedelta
 from pathlib import Path
 
+from config.cache_settings import build_caches_config
+
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 
@@ -93,6 +95,7 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'axes',
     'corsheaders',
     'rest_framework',
     'drf_spectacular',
@@ -110,7 +113,15 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'axes.middleware.AxesMiddleware',
 ]
+
+AUTHENTICATION_BACKENDS = [
+    'axes.backends.AxesStandaloneBackend',
+    'django.contrib.auth.backends.ModelBackend',
+]
+
+CACHES = build_caches_config()
 
 ROOT_URLCONF = 'config.urls'
 
@@ -228,6 +239,20 @@ SIMPLE_JWT = {
     'USER_ID_FIELD': 'id',
     'USER_ID_CLAIM': 'user_id',
 }
+
+# Bloqueo tras intentos fallidos de login (django-axes)
+AXES_ENABLED = env_bool('AXES_ENABLED', default=True)
+AXES_FAILURE_LIMIT = int(os.getenv('AXES_FAILURE_LIMIT', '5'))
+AXES_COOLOFF_TIME = timedelta(minutes=int(os.getenv('AXES_COOLOFF_MINUTES', '60')))
+AXES_RESET_ON_SUCCESS = True
+AXES_LOCKOUT_PARAMETERS = ['ip_address', 'username']
+AXES_LOCKOUT_CALLABLE = None
+AXES_HTTP_RESPONSE_CODE = 403
+AXES_USERNAME_FORM_FIELD = 'username'
+AXES_PASSWORD_FORM_FIELD = 'password'
+AXES_ONLY_ADMIN_SITE = False
+AXES_DISABLE_ACCESS_LOG = False
+AXES_ENABLE_ACCESS_FAILURE_LOG = True
 
 # Sobrescrito en development.py / production.py
 DEBUG = False

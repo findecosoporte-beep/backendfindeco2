@@ -68,5 +68,15 @@ LOGGING = {
             'level': 'WARNING',
             'propagate': False,
         },
+        'api.auth': {
+            'handlers': ['console'],
+            'level': os.getenv('AUTH_LOG_LEVEL', 'INFO'),
+            'propagate': False,
+        },
+        'axes': {
+            'handlers': ['console'],
+            'level': 'WARNING',
+            'propagate': False,
+        },
     },
 }

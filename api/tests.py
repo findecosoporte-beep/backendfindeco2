@@ -1592,6 +1592,87 @@ class JwtAuthTestCase(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
 
+class LoginSecurityTestCase(APITestCase):
+    """Throttle de login y bloqueo por intentos fallidos (axes)."""
+
+    def setUp(self):
+        from axes.models import AccessAttempt, AccessFailureLog
+        from django.core.cache import cache
+
+        cache.clear()
+        AccessAttempt.objects.all().delete()
+        AccessFailureLog.objects.all().delete()
+        user_model = get_user_model()
+        self.user = user_model.objects.create_user(
+            username='seguridad.login@test.com',
+            email='seguridad.login@test.com',
+            password='Secreta123!',
+        )
+        Usuario.objects.create(
+            nombre='Usuario Seguridad',
+            rol='asesor',
+            correo='seguridad.login@test.com',
+            clave='legacy-operativo',
+        )
+        self.login_url = '/api/v1/token/'
+        self.bad_payload = {
+            'username': 'seguridad.login@test.com',
+            'password': 'incorrecta',
+        }
+        self.good_payload = {
+            'username': 'seguridad.login@test.com',
+            'password': 'Secreta123!',
+        }
+
+    def _rest_framework_with_login_rate(self, login_rate: str) -> dict:
+        from django.conf import settings
+
+        config = dict(settings.REST_FRAMEWORK)
+        rates = dict(config['DEFAULT_THROTTLE_RATES'])
+        rates['login'] = login_rate
+        config['DEFAULT_THROTTLE_RATES'] = rates
+        return config
+
+    def test_login_throttle_devuelve_429(self):
+        from django.test import override_settings
+
+        rf = self._rest_framework_with_login_rate('3/min')
+        with override_settings(REST_FRAMEWORK=rf, AXES_FAILURE_LIMIT=100):
+            for _ in range(3):
+                response = self.client.post(self.login_url, self.bad_payload, format='json')
+                self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+            throttled = self.client.post(self.login_url, self.bad_payload, format='json')
+            self.assertEqual(throttled.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+
+    def test_login_bloqueado_tras_intentos_fallidos(self):
+        from django.test import override_settings
+
+        rf = self._rest_framework_with_login_rate('100/min')
+        with override_settings(REST_FRAMEWORK=rf, AXES_FAILURE_LIMIT=3):
+            for _ in range(3):
+                response = self.client.post(self.login_url, self.bad_payload, format='json')
+                self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+            locked = self.client.post(self.login_url, self.bad_payload, format='json')
+            self.assertEqual(locked.status_code, status.HTTP_403_FORBIDDEN)
+            self.assertIn('Demasiados intentos', str(locked.data.get('detail', '')))
+
+    def test_login_exitoso_reinicia_contador_axes(self):
+        from django.test import override_settings
+
+        rf = self._rest_framework_with_login_rate('100/min')
+        with override_settings(REST_FRAMEWORK=rf, AXES_FAILURE_LIMIT=3):
+            for _ in range(2):
+                self.client.post(self.login_url, self.bad_payload, format='json')
+
+            ok = self.client.post(self.login_url, self.good_payload, format='json')
+            self.assertEqual(ok.status_code, status.HTTP_200_OK)
+
+            locked = self.client.post(self.login_url, self.bad_payload, format='json')
+            self.assertEqual(locked.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
 class ProductionSettingsTestCase(SimpleTestCase):
     """Validaciones de configuración production (Fase 1 plan producción)."""
 

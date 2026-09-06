@@ -1,5 +1,6 @@
 """Throttling específico para endpoints sensibles."""
 
+from rest_framework.settings import api_settings
 from rest_framework.throttling import AnonRateThrottle, SimpleRateThrottle
 
 
@@ -8,11 +9,17 @@ class LoginRateThrottle(AnonRateThrottle):
 
     scope = 'login'
 
+    def get_rate(self):
+        return api_settings.DEFAULT_THROTTLE_RATES[self.scope]
+
 
 class LoginUserRateThrottle(SimpleRateThrottle):
     """Refuerzo por usuario autenticado en refresh token."""
 
     scope = 'login_user'
+
+    def get_rate(self):
+        return api_settings.DEFAULT_THROTTLE_RATES[self.scope]
 
     def get_cache_key(self, request, view):
         if not request.user or not request.user.is_authenticated:

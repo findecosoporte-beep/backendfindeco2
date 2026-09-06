@@ -52,6 +52,31 @@ En otra terminal, en `front/`: `npm run dev`.
 
 Los endpoints `/token/` y `/token/refresh/` tienen throttle dedicado (`login`, `login_user`) para mitigar fuerza bruta. En producción los límites son más estrictos (ver `config/settings/production.py`).
 
+| Variable | Default prod. | Descripción |
+|----------|---------------|-------------|
+| `THROTTLE_LOGIN` | `10/min` | Intentos de login/refresh por IP |
+| `THROTTLE_LOGIN_USER` | `30/min` | Refresh por usuario autenticado |
+
+### Redis (recomendado en producción)
+
+Con varios workers (Gunicorn), el throttle y el cache deben ser compartidos. Añade un servicio Redis en Railway y referencia su URL:
+
+| Variable | Descripción |
+|----------|-------------|
+| `REDIS_URL` | URL Redis (`redis://...`). Sin ella se usa cache en memoria (solo un worker). |
+
+### Bloqueo por intentos fallidos (django-axes)
+
+Tras N contraseñas incorrectas, la cuenta/IP queda bloqueada temporalmente (HTTP 403).
+
+| Variable | Default | Descripción |
+|----------|---------|-------------|
+| `AXES_ENABLED` | true | Activa/desactiva axes |
+| `AXES_FAILURE_LIMIT` | 5 | Intentos fallidos antes del bloqueo |
+| `AXES_COOLOFF_MINUTES` | 60 | Minutos de bloqueo |
+
+Tras desplegar: `python manage.py migrate` (incluye tablas de `axes`).
+
 ## Perfil operativo
 
 El JWT usa usuarios de Django; el rol se toma de la tabla `usuarios` por correo igual al email del usuario Django.

@@ -13,6 +13,27 @@ Guía para conectar la API Django al MySQL del mismo proyecto en [Railway](https
 1. En el proyecto → **+ New** → **Database** → **Add MySQL**
 2. Espera a que el servicio MySQL quede en estado **Active**
 
+## 2b. Añadir Redis (recomendado para seguridad)
+
+El rate limit del login y el bloqueo por intentos fallidos comparten cache entre workers de Gunicorn. Sin Redis, cada worker cuenta por separado.
+
+1. En el proyecto → **+ New** → **Database** → **Add Redis**
+2. Espera a que quede **Active**
+3. Abre el servicio **web** de la API (no el Redis) → **Variables**
+4. **+ Nueva variable** → **Agregar referencia de variable**
+5. Elige el servicio **Redis** y marca **`REDIS_URL`** (o la variable equivalente que muestre Railway)
+
+Variables opcionales de seguridad (valores fijos en el servicio web):
+
+```env
+AXES_FAILURE_LIMIT=5
+AXES_COOLOFF_MINUTES=60
+THROTTLE_LOGIN=10/min
+THROTTLE_LOGIN_USER=30/min
+```
+
+Tras el deploy, `scripts/start.sh` ejecuta `migrate` e incluye las tablas de **django-axes**.
+
 ## 3. Conectar la API a MySQL
 
 Lo que ves en la captura es el servicio **MySQL** (correcto). Esas variables viven ahí.
