@@ -521,8 +521,8 @@ class PrestamoSerializer(serializers.ModelSerializer):
         fields = '__all__'
         extra_kwargs = {
             'fecha_vencimiento': {'required': False},
-            'codigo_prestamo': {'required': False},
-            'numero_prestamo': {'required': False},
+            'codigo_prestamo': {'required': False, 'allow_blank': True},
+            'numero_prestamo': {'required': False, 'allow_blank': True},
             'creado_en': {'read_only': True},
             'creado_por': {'read_only': True},
             'modificado_por': {'read_only': True},
@@ -665,6 +665,14 @@ class PrestamoSerializer(serializers.ModelSerializer):
         if actor is not None:
             validated_data['creado_por'] = actor
             validated_data['modificado_por'] = actor
+        codigo = (validated_data.get('codigo_prestamo') or '').strip()
+        numero = (validated_data.get('numero_prestamo') or '').strip()
+        if not codigo or not numero:
+            from .core.prestamo_numero import siguiente_numeracion_prestamo
+
+            valor = codigo or numero or siguiente_numeracion_prestamo()
+            validated_data['codigo_prestamo'] = valor
+            validated_data['numero_prestamo'] = valor
         cliente = validated_data.get('id_cliente')
         if cliente is not None:
             validated_data['ciclos'] = _ciclos_para_renovacion(cliente)
