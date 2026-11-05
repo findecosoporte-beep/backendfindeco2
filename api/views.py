@@ -8,6 +8,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.core.paginator import Paginator
 from django.db import IntegrityError, transaction
 from django.db.models import Count, F, Q, Sum
@@ -985,7 +986,20 @@ class CarteraViewSet(viewsets.ModelViewSet):
     ordering_fields = ['id_cartera', 'nombre', 'dia_cobro']
 
 
-def _cargar_auxiliar_reporte_integracion(ids: list[int]) -> tuple[
+def _cache_key_resumen_carteras(request, estado_param: str) -> str:
+    from .cobrador_scope import usuario_operativo_desde_request
+
+    actor = usuario_operativo_desde_request(request)
+    actor_id = actor.id_usuario if actor else 'all'
+    estado = estado_param or 'default'
+    return f'ri_resumen_cartera:v1:{actor_id}:{estado}'
+
+
+def _cargar_auxiliar_reporte_integracion(
+    ids: list[int],
+    *,
+    incluir_cobrado_hoy: bool = True,
+) -> tuple[
     dict[int, Decimal],
     dict[int, list[PrestamoCuota]],
     dict[int, set[int]],
@@ -1047,10 +1061,10 @@ def _cargar_auxiliar_reporte_integracion(ids: list[int]) -> tuple[
             abonado_por_prestamo[pid] += (
                 Decimal(pg.capital) + Decimal(pg.interes) + Decimal(pg.mora)
             )
-            if pid not in ultimo_pago_por:
+            if incluir_cobrado_hoy and pid not in ultimo_pago_por:
                 ultimo_pago_por[pid] = pg
             # Cobros del día: solo maestros (o filas con efectivo recibido) para no duplicar.
-            if pg.fecha_pago == hoy and (
+            if incluir_cobrado_hoy and pg.fecha_pago == hoy and (
                 pg.id_pago_factura_id is None or pg.monto_recibido_cliente is not None
             ):
                 if pg.monto_recibido_cliente is not None:
@@ -1340,6 +1354,14 @@ def _recolectar_reporte_integracion(viewset, request, *, force_all: bool = False
     }
 
     if not ids:
+        if resumen_por_cartera:
+            return {
+                'fecha_reporte': fecha_reporte,
+                'generado_en': generado_en,
+                'resumen_por_cartera': {},
+                'all_rows': True,
+                'solo_resumen': True,
+            }
         all_rows_empty = force_all or (
             (request.query_params.get('all') or '').strip().lower() in ('1', 'true', 'yes')
         )
@@ -1363,6 +1385,12 @@ def _recolectar_reporte_integracion(viewset, request, *, force_all: bool = False
             'all_rows': False,
         }
 
+    if resumen_por_cartera:
+        cache_key = _cache_key_resumen_carteras(request, estado_param)
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
     (
         primera_cuota,
         cuotas_por_prestamo,
@@ -1371,7 +1399,10 @@ def _recolectar_reporte_integracion(viewset, request, *, force_all: bool = False
         abonado_por_prestamo,
         abonado_cuota_por_prestamo,
         cobrado_hoy_por_prestamo,
-    ) = _cargar_auxiliar_reporte_integracion(ids)
+    ) = _cargar_auxiliar_reporte_integracion(
+        ids,
+        incluir_cobrado_hoy=not resumen_por_cartera,
+    )
 
     clientes_ids: set[int] = set()
     sum_inicial = Decimal('0')
@@ -1427,13 +1458,15 @@ def _recolectar_reporte_integracion(viewset, request, *, force_all: bool = False
                 'total_saldo_actual': str(round_money(bucket['sum_actual'])),
                 'total_cuota': str(round_money(bucket['sum_cuota'])),
             }
-        return {
+        payload = {
             'fecha_reporte': fecha_reporte,
             'generado_en': generado_en,
             'resumen_por_cartera': resumen_por_cartera_payload,
             'all_rows': True,
             'solo_resumen': True,
         }
+        cache.set(cache_key, payload, timeout=120)
+        return payload
 
     resumen = {
         'clientes_distintos': len(clientes_ids),
