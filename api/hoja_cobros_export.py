@@ -268,16 +268,64 @@ def _texto_cuota_fila(fila: dict) -> str:
     return _money(monto_cuota) or '—'
 
 
+SEMANAS_POR_MES_PLAZO = 4
+
+
+def _plazo_meses_fila(fila: dict) -> str:
+    forma = (fila.get('forma_pago') or 'semanal').strip().lower()
+    plazo_raw = fila.get('plazo_total') if fila.get('plazo_total') not in (None, '') else fila.get('plazo')
+    try:
+        plazo = int(plazo_raw or 0)
+    except (TypeError, ValueError):
+        return '—'
+    if plazo <= 0:
+        return '—'
+    if forma == 'semanal':
+        meses = round(plazo / SEMANAS_POR_MES_PLAZO * 100) / 100
+    else:
+        meses = float(plazo)
+    if meses == int(meses):
+        return str(int(meses))
+    return f'{meses:.2f}'
+
+
+def _monto_prestamo_fila(fila: dict) -> str:
+    raw = fila.get('monto')
+    if raw in (None, ''):
+        raw = fila.get('saldo_inicial')
+    txt = _money(raw)
+    return txt if txt else '—'
+
+
+def _cuota_pendiente_listado_fila(fila: dict) -> str:
+    n = fila.get('cuota_siguiente_numero')
+    monto_txt = _money(fila.get('cuota_siguiente_monto'))
+    if n is None:
+        return monto_txt or '—'
+    if not monto_txt:
+        return f'#{n}'
+    return f'#{n}  {monto_txt}'
+
+
+def _decimal_desde_campo(value) -> Decimal:
+    try:
+        if value in (None, ''):
+            return Decimal('0.00')
+        return Decimal(str(value))
+    except (ArithmeticError, ValueError):
+        return Decimal('0.00')
+
+
 def exportar_hoja_cobros_listado_pdf(datos: dict) -> bytes:
-    """PDF simple: préstamo, cliente, estado, cuota y columna en blanco."""
+    """PDF listado web: mismas columnas que CobrosView (vista=listado)."""
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
         buffer,
-        pagesize=letter,
-        leftMargin=12 * mm,
-        rightMargin=12 * mm,
-        topMargin=12 * mm,
-        bottomMargin=12 * mm,
+        pagesize=landscape(letter),
+        leftMargin=8 * mm,
+        rightMargin=8 * mm,
+        topMargin=10 * mm,
+        bottomMargin=10 * mm,
     )
     styles = getSampleStyleSheet()
     meta_style = ParagraphStyle(
@@ -291,8 +339,8 @@ def exportar_hoja_cobros_listado_pdf(datos: dict) -> bytes:
     cell_style = ParagraphStyle(
         'ListCell',
         parent=styles['Normal'],
-        fontSize=8,
-        leading=10,
+        fontSize=7,
+        leading=9,
         wordWrap='CJK',
     )
     cell_right = ParagraphStyle(
@@ -300,11 +348,16 @@ def exportar_hoja_cobros_listado_pdf(datos: dict) -> bytes:
         parent=cell_style,
         alignment=2,
     )
+    cell_center = ParagraphStyle(
+        'ListCellCenter',
+        parent=cell_style,
+        alignment=1,
+    )
     header_style = ParagraphStyle(
         'ListHeader',
         parent=styles['Normal'],
-        fontSize=8,
-        leading=10,
+        fontSize=6,
+        leading=8,
         alignment=1,
         fontName='Helvetica-Bold',
         textColor=colors.black,
@@ -323,73 +376,102 @@ def exportar_hoja_cobros_listado_pdf(datos: dict) -> bytes:
         ]
     )
 
-    headers = ['N', 'Nº PRÉSTAMO', 'NOMBRE CLIENTE', 'ESTADO', 'CUOTA', 'ESPACIO']
-    col_widths = [10 * mm, 28 * mm, 62 * mm, 28 * mm, 30 * mm, 32 * mm]
+    headers = [
+        'N',
+        'Nº PRÉSTAMO',
+        'NOMBRE CLIENTE',
+        'MONTO',
+        'PLAZO EN MESES',
+        'SALDO INICIAL',
+        'SALDO PENDIENTE',
+        'FECHA INICIAL',
+        'FECHA FINAL',
+        'CUOTA PENDIENTE',
+        'ESPACIO',
+    ]
+    col_widths = [
+        8 * mm,
+        22 * mm,
+        42 * mm,
+        22 * mm,
+        16 * mm,
+        22 * mm,
+        22 * mm,
+        20 * mm,
+        20 * mm,
+        24 * mm,
+        14 * mm,
+    ]
 
     table_data = [[_parrafo(h, header_style) for h in headers]]
     filas = list(datos.get('filas') or [])
     total_cuota = Decimal('0.00')
+    total_saldo_pendiente = Decimal('0.00')
     for idx, fila in enumerate(filas, start=1):
         monto_cuota = fila.get('cuota_siguiente_monto') or fila.get('cuota')
-        try:
-            if monto_cuota not in (None, ''):
-                total_cuota += Decimal(str(monto_cuota))
-        except (ArithmeticError, ValueError):
-            pass
+        total_cuota += _decimal_desde_campo(monto_cuota)
+        total_saldo_pendiente += _decimal_desde_campo(fila.get('saldo_actual'))
         table_data.append(
             [
                 str(idx),
                 str(fila.get('numero_prestamo') or ''),
                 _parrafo(str(fila.get('nombre_cliente') or ''), cell_style),
-                _parrafo(_estado_label(fila.get('estado')), cell_style),
-                _parrafo(_texto_cuota_fila(fila), cell_right),
+                _parrafo(_monto_prestamo_fila(fila), cell_right),
+                _parrafo(_plazo_meses_fila(fila), cell_center),
+                _parrafo(_money(fila.get('saldo_inicial')) or '—', cell_right),
+                _parrafo(_money(fila.get('saldo_actual')) or '—', cell_right),
+                _parrafo(_fecha_celda(fila.get('fecha_entrega')) or '—', cell_center),
+                _parrafo(_fecha_celda(fila.get('fecha_vencimiento')) or '—', cell_center),
+                _parrafo(_cuota_pendiente_listado_fila(fila), cell_center),
                 '',
             ]
         )
 
     if not filas:
         table_data.append(
-            [
-                '',
-                '',
-                _parrafo('Sin préstamos en esta cartera.', cell_style),
-                '',
-                '',
-                '',
-            ]
+            ['', '', _parrafo('Sin préstamos en esta cartera.', cell_style)]
+            + [''] * (len(headers) - 3)
         )
 
     table_data.append(
         [
             '',
             '',
-            _parrafo(f'TOTALES ({len(filas)}):', cell_right),
+            _parrafo('TOTALES:', cell_right),
             '',
-            _parrafo(_money(total_cuota) if total_cuota else '', cell_right),
+            '',
+            '',
+            _parrafo(_money(total_saldo_pendiente) if total_saldo_pendiente else '', cell_right),
+            '',
+            '',
+            _parrafo(_money(total_cuota) if total_cuota else '', cell_center),
             '',
         ]
     )
 
+    last_row = len(table_data) - 1
     table = Table(table_data, colWidths=col_widths, repeatRows=1)
     table.setStyle(
         TableStyle(
             [
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#F3F4F6')),
                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, -1), 8),
+                ('FONTSIZE', (0, 0), (-1, -1), 7),
                 ('ALIGN', (0, 0), (0, -1), 'CENTER'),
                 ('ALIGN', (1, 0), (1, -1), 'CENTER'),
-                ('ALIGN', (4, 1), (4, -1), 'RIGHT'),
+                ('ALIGN', (3, 1), (3, -1), 'RIGHT'),
+                ('ALIGN', (5, 1), (6, -1), 'RIGHT'),
+                ('ALIGN', (7, 1), (9, -1), 'CENTER'),
                 ('GRID', (0, 0), (-1, -1), 0.4, colors.black),
                 ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-                ('LEFTPADDING', (0, 0), (-1, -1), 3),
-                ('RIGHTPADDING', (0, 0), (-1, -1), 3),
-                ('TOPPADDING', (0, 0), (-1, -1), 4),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-                ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#FAFAFA')),
-                ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
-                ('ROWBACKGROUNDS', (0, 1), (-1, -2), [colors.white, colors.HexColor('#FAFAFA')]),
-                ('BACKGROUND', (5, 1), (5, -2), colors.white),
+                ('LEFTPADDING', (0, 0), (-1, -1), 2),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 2),
+                ('TOPPADDING', (0, 0), (-1, -1), 3),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+                ('BACKGROUND', (0, last_row), (-1, last_row), colors.HexColor('#FAFAFA')),
+                ('FONTNAME', (0, last_row), (-1, last_row), 'Helvetica-Bold'),
+                ('ROWBACKGROUNDS', (0, 1), (-1, last_row - 1), [colors.white, colors.HexColor('#FAFAFA')]),
+                ('BACKGROUND', (10, 1), (10, last_row - 1), colors.white),
             ]
         )
     )

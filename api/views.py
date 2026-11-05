@@ -1623,7 +1623,7 @@ class PrestamoViewSet(viewsets.ModelViewSet):
         """Descarga PDF con el listado de la hoja de cobros (cartera obligatoria).
 
         vista=seguimiento → PDF cobrador (préstamo, cliente, estado, cuota, cobrado hoy).
-        vista=listado → PDF simple (préstamo, cliente, estado, cuota, espacio en blanco).
+        vista=listado → PDF alineado al listado web (monto, plazo, saldos, fechas, cuota pendiente).
         Sin vista → PDF landscape completo (hoja clásica).
         """
         cartera_param = (request.query_params.get('id_cartera') or '').strip()
