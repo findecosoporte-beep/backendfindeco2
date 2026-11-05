@@ -1207,6 +1207,16 @@ class RolePermissionIntegrationTestCase(APITestCase):
         self.assertNotIn('filas', resp_vacio.data)
         self.assertIn(str(cartera.id_cartera), resp_vacio.data['resumen_por_cartera'])
 
+        alias = self.client.get(
+            '/api/v1/prestamos/resumen-carteras/?estado=activo,pendiente_aprobacion,mora'
+        )
+        self.assertEqual(alias.status_code, status.HTTP_200_OK)
+        self.assertNotIn('filas', alias.data)
+        self.assertEqual(
+            alias.data['resumen_por_cartera'][str(cartera.id_cartera)]['prestamos'],
+            1,
+        )
+
     def test_supervisor_crea_cobrador_con_carteras(self):
         self._auth_with_role(role='supervisor', email='supervisor.cobrador@test.com')
         cartera_a = Cartera.objects.create(nombre='Comayagua Test', dia_cobro='lunes')

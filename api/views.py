@@ -1311,10 +1311,24 @@ def _param_resumen_por_cartera(request) -> bool:
     return val in ('1', 'true', 'yes')
 
 
-def _recolectar_reporte_integracion(viewset, request, *, force_all: bool = False) -> dict:
+def _response_resumen_por_cartera_json(datos: dict) -> dict:
+    return {
+        'fecha_reporte': datos['fecha_reporte'],
+        'generado_en': datos['generado_en'],
+        'resumen_por_cartera': datos.get('resumen_por_cartera', {}),
+    }
+
+
+def _recolectar_reporte_integracion(
+    viewset,
+    request,
+    *,
+    force_all: bool = False,
+    force_resumen_por_cartera: bool = False,
+) -> dict:
     """Arma el payload de reporte-integracion (mismas filas/resumen que el listado JSON)."""
     qs = viewset.get_queryset()
-    resumen_por_cartera = _param_resumen_por_cartera(request)
+    resumen_por_cartera = force_resumen_por_cartera or _param_resumen_por_cartera(request)
 
     estado_param = (request.query_params.get('estado') or '').strip()
     if estado_param:
@@ -1681,18 +1695,18 @@ class PrestamoViewSet(viewsets.ModelViewSet):
             status=status.HTTP_200_OK,
         )
 
+    @action(detail=False, methods=['get'], url_path='resumen-carteras')
+    def resumen_carteras(self, request):
+        """Totales por cartera para selector de cobros (misma lógica que reporte-integracion resumido)."""
+        datos = _recolectar_reporte_integracion(self, request, force_resumen_por_cartera=True)
+        return Response(_response_resumen_por_cartera_json(datos))
+
     @action(detail=False, methods=['get'], url_path='reporte-integracion')
     def reporte_integracion(self, request):
         """Listado agregado tipo reporte de cartera: cuota planificada y saldo desde último pago."""
         datos = _recolectar_reporte_integracion(self, request)
         if datos.get('solo_resumen') and 'resumen_por_cartera' in datos:
-            return Response(
-                {
-                    'fecha_reporte': datos['fecha_reporte'],
-                    'generado_en': datos['generado_en'],
-                    'resumen_por_cartera': datos['resumen_por_cartera'],
-                }
-            )
+            return Response(_response_resumen_por_cartera_json(datos))
         if datos.get('all_rows'):
             return Response(
                 {
