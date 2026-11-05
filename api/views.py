@@ -1299,10 +1299,22 @@ def _query_param_truthy(request, name: str) -> bool:
     return (request.query_params.get(name) or '').strip().lower() in ('1', 'true', 'yes')
 
 
+def _param_resumen_por_cartera(request) -> bool:
+    """Activo con resumen_por_cartera, resumen_por_cartera=1 o = (valor vacío)."""
+    if 'resumen_por_cartera' not in request.query_params:
+        return False
+    val = (request.query_params.get('resumen_por_cartera') or '').strip().lower()
+    if val in ('0', 'false', 'no'):
+        return False
+    if val == '':
+        return True
+    return val in ('1', 'true', 'yes')
+
+
 def _recolectar_reporte_integracion(viewset, request, *, force_all: bool = False) -> dict:
     """Arma el payload de reporte-integracion (mismas filas/resumen que el listado JSON)."""
     qs = viewset.get_queryset()
-    resumen_por_cartera = _query_param_truthy(request, 'resumen_por_cartera')
+    resumen_por_cartera = _param_resumen_por_cartera(request)
 
     estado_param = (request.query_params.get('estado') or '').strip()
     if estado_param:
