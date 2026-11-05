@@ -18,6 +18,7 @@ from .views import (
     PrestamoViewSet,
     PrestamoCuotaViewSet,
     ReporteSarTrimestralView,
+    ResumenCarterasView,
     ServicioViewSet,
     SimulacionPrestamoView,
     UsuarioViewSet,
@@ -42,6 +43,11 @@ urlpatterns = [
     path('me/', MeView.as_view(), name='me'),
     path('dashboard/', DashboardResumenView.as_view(), name='dashboard'),
     path('prestamos/simular/', SimulacionPrestamoView.as_view(), name='prestamos-simular'),
+    path(
+        'prestamos/resumen-carteras/',
+        ResumenCarterasView.as_view(),
+        name='prestamos-resumen-carteras',
+    ),
     path(
         'configuracion/facturacion/',
         ConfiguracionFacturacionView.as_view(),

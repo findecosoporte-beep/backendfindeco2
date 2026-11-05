@@ -1559,6 +1559,21 @@ def _recolectar_reporte_integracion(
     return payload
 
 
+class ResumenCarterasView(APIView):
+    """Totales por cartera para el selector de cobros (ruta fija, no /prestamos/{pk}/)."""
+
+    permission_classes = AUTH_PERMISSION_CLASSES
+
+    def get(self, request):
+        viewset = PrestamoViewSet()
+        viewset.request = request
+        viewset.format_kwarg = None
+        viewset.action = 'resumen_carteras'
+        viewset.kwargs = {}
+        datos = _recolectar_reporte_integracion(viewset, request, force_resumen_por_cartera=True)
+        return Response(_response_resumen_por_cartera_json(datos))
+
+
 class PrestamoViewSet(viewsets.ModelViewSet):
     """CRUD de prestamos con filtros de negocio."""
 
@@ -1697,12 +1712,6 @@ class PrestamoViewSet(viewsets.ModelViewSet):
             },
             status=status.HTTP_200_OK,
         )
-
-    @action(detail=False, methods=['get'], url_path='resumen-carteras')
-    def resumen_carteras(self, request):
-        """Totales por cartera para selector de cobros (misma lógica que reporte-integracion resumido)."""
-        datos = _recolectar_reporte_integracion(self, request, force_resumen_por_cartera=True)
-        return Response(_response_resumen_por_cartera_json(datos))
 
     @action(detail=False, methods=['get'], url_path='reporte-integracion')
     def reporte_integracion(self, request):
