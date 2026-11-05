@@ -1562,6 +1562,9 @@ def _recolectar_reporte_integracion(
 class PrestamoViewSet(viewsets.ModelViewSet):
     """CRUD de prestamos con filtros de negocio."""
 
+    # Evita que rutas como /prestamos/resumen-carteras/ se interpreten como pk en retrieve.
+    lookup_value_regex = r'[0-9]+'
+
     queryset = Prestamo.objects.select_related(
         'id_cliente',
         'id_usuario',
