@@ -1281,9 +1281,14 @@ def _fila_reporte_integracion(
     return row_data
 
 
+def _query_param_truthy(request, name: str) -> bool:
+    return (request.query_params.get(name) or '').strip().lower() in ('1', 'true', 'yes')
+
+
 def _recolectar_reporte_integracion(viewset, request, *, force_all: bool = False) -> dict:
     """Arma el payload de reporte-integracion (mismas filas/resumen que el listado JSON)."""
     qs = viewset.get_queryset()
+    resumen_por_cartera = _query_param_truthy(request, 'resumen_por_cartera')
 
     estado_param = (request.query_params.get('estado') or '').strip()
     if estado_param:
@@ -1373,6 +1378,7 @@ def _recolectar_reporte_integracion(viewset, request, *, force_all: bool = False
     sum_cuota = Decimal('0')
     sum_actual = Decimal('0')
     sum_plazo = 0
+    buckets_por_cartera: dict[int, dict] = {}
     for p in prestamos_qs.iterator(chunk_size=200):
         clientes_ids.add(p.id_cliente_id)
         plan_rows = cuotas_por_prestamo.get(p.id_prestamo, [])
@@ -1390,6 +1396,44 @@ def _recolectar_reporte_integracion(viewset, request, *, force_all: bool = False
         sum_cuota += cuota_pl
         sum_actual += saldo_act
         sum_plazo += int(p.plazo or 0)
+        if resumen_por_cartera and p.id_cartera_id is not None:
+            cid = int(p.id_cartera_id)
+            bucket = buckets_por_cartera.get(cid)
+            if bucket is None:
+                bucket = {
+                    'clientes': set(),
+                    'prestamos': 0,
+                    'sum_inicial': Decimal('0'),
+                    'sum_cuota': Decimal('0'),
+                    'sum_actual': Decimal('0'),
+                    'sum_plazo': 0,
+                }
+                buckets_por_cartera[cid] = bucket
+            bucket['clientes'].add(p.id_cliente_id)
+            bucket['prestamos'] += 1
+            bucket['sum_inicial'] += saldo_inicial
+            bucket['sum_cuota'] += cuota_pl
+            bucket['sum_actual'] += saldo_act
+            bucket['sum_plazo'] += int(p.plazo or 0)
+
+    if resumen_por_cartera:
+        resumen_por_cartera_payload: dict[str, dict] = {}
+        for cid, bucket in buckets_por_cartera.items():
+            resumen_por_cartera_payload[str(cid)] = {
+                'clientes_distintos': len(bucket['clientes']),
+                'prestamos': bucket['prestamos'],
+                'total_cuotas_plazo': bucket['sum_plazo'],
+                'total_saldo_inicial': str(round_money(bucket['sum_inicial'])),
+                'total_saldo_actual': str(round_money(bucket['sum_actual'])),
+                'total_cuota': str(round_money(bucket['sum_cuota'])),
+            }
+        return {
+            'fecha_reporte': fecha_reporte,
+            'generado_en': generado_en,
+            'resumen_por_cartera': resumen_por_cartera_payload,
+            'all_rows': True,
+            'solo_resumen': True,
+        }
 
     resumen = {
         'clientes_distintos': len(clientes_ids),
@@ -1596,6 +1640,14 @@ class PrestamoViewSet(viewsets.ModelViewSet):
     def reporte_integracion(self, request):
         """Listado agregado tipo reporte de cartera: cuota planificada y saldo desde último pago."""
         datos = _recolectar_reporte_integracion(self, request)
+        if datos.get('solo_resumen') and 'resumen_por_cartera' in datos:
+            return Response(
+                {
+                    'fecha_reporte': datos['fecha_reporte'],
+                    'generado_en': datos['generado_en'],
+                    'resumen_por_cartera': datos['resumen_por_cartera'],
+                }
+            )
         if datos.get('all_rows'):
             return Response(
                 {

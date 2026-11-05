@@ -1165,6 +1165,40 @@ class RolePermissionIntegrationTestCase(APITestCase):
         numeros_cobro = {f['numero_prestamo'] for f in filtro_cobro.data['filas']}
         self.assertIn('PRE-PEND-001', numeros_cobro)
 
+    def test_reporte_integracion_resumen_por_cartera_sin_filas(self):
+        """Una sola consulta agrupa totales por cartera (sin armar filas del listado)."""
+        self._auth_with_role(role='supervisor', email='reporte.resumen.cartera@test.com')
+        cliente = Cliente.objects.create(nombre='Cliente Resumen', dni='0801-2000-00024')
+        cartera = Cartera.objects.create(nombre='Cartera Resumen API', dia_cobro='lunes')
+        usuario_operativo = Usuario.objects.get(correo='reporte.resumen.cartera@test.com')
+        payload = {
+            'numero_prestamo': 'PRE-RES-CART-001',
+            'id_cliente': cliente.id_cliente,
+            'id_usuario': usuario_operativo.id_usuario,
+            'id_cartera': cartera.id_cartera,
+            'monto': '5000.00',
+            'plazo': 3,
+            'tasa_interes': '8.00',
+            'estado': 'pendiente_aprobacion',
+            'forma_pago': 'mensual',
+            'forma_desembolso': 'efectivo',
+            'comision': '0.00',
+            'fecha_entrega': date.today().isoformat(),
+        }
+        create_resp = self.client.post('/api/v1/prestamos/', data=payload, format='json')
+        self.assertEqual(create_resp.status_code, status.HTTP_201_CREATED)
+
+        resp = self.client.get(
+            '/api/v1/prestamos/reporte-integracion/'
+            '?estado=activo,pendiente_aprobacion,mora&resumen_por_cartera=1'
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertNotIn('filas', resp.data)
+        bloque = resp.data['resumen_por_cartera'][str(cartera.id_cartera)]
+        self.assertEqual(bloque['prestamos'], 1)
+        self.assertIn('total_saldo_actual', bloque)
+        self.assertIn('total_cuota', bloque)
+
     def test_supervisor_crea_cobrador_con_carteras(self):
         self._auth_with_role(role='supervisor', email='supervisor.cobrador@test.com')
         cartera_a = Cartera.objects.create(nombre='Comayagua Test', dia_cobro='lunes')
