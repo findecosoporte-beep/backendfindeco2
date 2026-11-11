@@ -1217,6 +1217,40 @@ class RolePermissionIntegrationTestCase(APITestCase):
             1,
         )
 
+    def test_dashboard_ultimos_prestamos_usa_saldo_con_intereses(self):
+        """Sin pagos, el saldo del panel incluye intereses del plan (igual que la hoja de cobros)."""
+        self._auth_with_role(role='supervisor', email='dashboard.saldo@test.com')
+        cliente = Cliente.objects.create(nombre='Cliente Dashboard', dni='0801-2000-00031')
+        cartera = Cartera.objects.create(nombre='Cartera Dashboard', dia_cobro='lunes')
+        usuario_operativo = Usuario.objects.get(correo='dashboard.saldo@test.com')
+        create_resp = self.client.post(
+            '/api/v1/prestamos/',
+            data={
+                'numero_prestamo': 'PRE-DASH-001',
+                'id_cliente': cliente.id_cliente,
+                'id_usuario': usuario_operativo.id_usuario,
+                'id_cartera': cartera.id_cartera,
+                'monto': '5000.00',
+                'plazo': 3,
+                'tasa_interes': '8.00',
+                'estado': 'activo',
+                'forma_pago': 'mensual',
+                'forma_desembolso': 'efectivo',
+                'comision': '0.00',
+                'fecha_entrega': date.today().isoformat(),
+            },
+            format='json',
+        )
+        self.assertEqual(create_resp.status_code, status.HTTP_201_CREATED)
+
+        resp = self.client.get('/api/v1/dashboard/')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        fila = next(
+            f for f in resp.data['ultimos_prestamos'] if f['numero_prestamo'] == 'PRE-DASH-001'
+        )
+        self.assertGreater(Decimal(fila['interes']), Decimal('0'))
+        self.assertGreater(Decimal(fila['saldo']), Decimal('5000.00'))
+
     def test_supervisor_crea_cobrador_con_carteras(self):
         self._auth_with_role(role='supervisor', email='supervisor.cobrador@test.com')
         cartera_a = Cartera.objects.create(nombre='Comayagua Test', dia_cobro='lunes')

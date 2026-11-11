@@ -587,22 +587,40 @@ class DashboardResumenView(APIView):
             monto_desembolsado.append(float(desembolso or 0))
 
         ultimos_prestamos = []
-        prestamos_qs = Prestamo.objects.select_related('id_cliente').order_by('-fecha_entrega', '-id_prestamo')[:25]
+        prestamos_qs = list(
+            Prestamo.objects.select_related('id_cliente').order_by('-fecha_entrega', '-id_prestamo')[:25]
+        )
         prestamo_ids = [p.id_prestamo for p in prestamos_qs]
-        ultimo_pago_por_prestamo: dict[int, Pago] = {}
-        if prestamo_ids:
-            for pago in filtrar_pagos_vigentes(
-                Pago.objects.filter(id_prestamo_id__in=prestamo_ids)
-            ).order_by(
-                'id_prestamo_id',
-                '-fecha_pago',
-                '-id_pago',
-            ):
-                if pago.id_prestamo_id not in ultimo_pago_por_prestamo:
-                    ultimo_pago_por_prestamo[pago.id_prestamo_id] = pago
+        (
+            primera_cuota,
+            cuotas_por_prestamo,
+            cuotas_pagadas_nums,
+            _ultimo_pago_por,
+            abonado_por_prestamo,
+            abonado_cuota_por_prestamo,
+            _cobrado_hoy,
+        ) = _cargar_auxiliar_reporte_integracion(prestamo_ids, incluir_cobrado_hoy=False)
 
         for prestamo in prestamos_qs:
-            ultimo_pago = ultimo_pago_por_prestamo.get(prestamo.id_prestamo)
+            plan_rows = cuotas_por_prestamo.get(prestamo.id_prestamo, [])
+            saldo_inicial, _cuota, saldo_actual = _montos_reporte_integracion(
+                prestamo,
+                primera_cuota,
+                plan_rows,
+                cuotas_pagadas_nums.get(prestamo.id_prestamo, set()),
+                abonado_por_prestamo.get(prestamo.id_prestamo, Decimal('0.00')),
+                abonado_por_cuota=(
+                    abonado_cuota_por_prestamo.get(prestamo.id_prestamo, {}) if plan_rows else None
+                ),
+            )
+            if plan_rows:
+                interes_total = round_money(
+                    sum(Decimal(row.interes_programado or 0) for row in plan_rows)
+                )
+            else:
+                interes_total = round_money(
+                    max(Decimal('0.00'), saldo_inicial - Decimal(prestamo.monto))
+                )
             ultimos_prestamos.append(
                 {
                     'id_prestamo': prestamo.id_prestamo,
@@ -612,8 +630,8 @@ class DashboardResumenView(APIView):
                     'producto': prestamo.producto,
                     'estado': prestamo.estado,
                     'monto': str(prestamo.monto),
-                    'interes': str(ultimo_pago.interes if ultimo_pago else 0),
-                    'saldo': str(ultimo_pago.saldo if ultimo_pago else prestamo.monto),
+                    'interes': str(interes_total),
+                    'saldo': str(saldo_actual),
                     'fecha_entrega': prestamo.fecha_entrega.isoformat() if prestamo.fecha_entrega else None,
                 },
             )
