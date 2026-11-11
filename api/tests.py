@@ -167,6 +167,9 @@ class RolePermissionIntegrationTestCase(APITestCase):
     """Pruebas de integracion para permisos por rol en endpoints DRF."""
 
     def setUp(self):
+        from django.core.cache import cache
+
+        cache.clear()
         self.user_model = get_user_model()
         self.cliente_payload = {
             'nombre': 'Cliente API',
@@ -1216,6 +1219,43 @@ class RolePermissionIntegrationTestCase(APITestCase):
             alias.data['resumen_por_cartera'][str(cartera.id_cartera)]['prestamos'],
             1,
         )
+
+    def test_resumen_carteras_cache_se_invalida_al_crear_prestamo(self):
+        self._auth_with_role(role='supervisor', email='resumen.cache@test.com')
+        cartera = Cartera.objects.create(nombre='Cartera Cache', dia_cobro='lunes')
+        usuario_operativo = Usuario.objects.get(correo='resumen.cache@test.com')
+        url = '/api/v1/prestamos/resumen-carteras/?estado=activo,pendiente_aprobacion,mora'
+
+        def crear(numero, dni):
+            cliente = Cliente.objects.create(nombre=f'Cliente {numero}', dni=dni)
+            with self.captureOnCommitCallbacks(execute=True):
+                resp = self.client.post(
+                    '/api/v1/prestamos/',
+                    data={
+                        'numero_prestamo': numero,
+                        'id_cliente': cliente.id_cliente,
+                        'id_usuario': usuario_operativo.id_usuario,
+                        'id_cartera': cartera.id_cartera,
+                        'monto': '1000.00',
+                        'plazo': 2,
+                        'tasa_interes': '8.00',
+                        'estado': 'pendiente_aprobacion',
+                        'forma_pago': 'mensual',
+                        'forma_desembolso': 'efectivo',
+                        'comision': '0.00',
+                        'fecha_entrega': date.today().isoformat(),
+                    },
+                    format='json',
+                )
+            self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+
+        crear('PRE-CACHE-001', '0801-2000-00031')
+        primero = self.client.get(url)
+        self.assertEqual(primero.data['resumen_por_cartera'][str(cartera.id_cartera)]['prestamos'], 1)
+
+        crear('PRE-CACHE-002', '0801-2000-00032')
+        segundo = self.client.get(url)
+        self.assertEqual(segundo.data['resumen_por_cartera'][str(cartera.id_cartera)]['prestamos'], 2)
 
     def test_dashboard_ultimos_prestamos_usa_saldo_con_intereses(self):
         """Sin pagos, el saldo del panel incluye intereses del plan (igual que la hoja de cobros)."""

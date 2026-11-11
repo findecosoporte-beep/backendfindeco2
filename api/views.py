@@ -6,6 +6,7 @@ import re
 from collections import defaultdict
 from datetime import date, timedelta
 from decimal import Decimal
+from urllib.parse import urlencode
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
@@ -106,6 +107,7 @@ from .models import (
 )
 from .permissions import RoleBasedAccessPermission
 from .pagination import ClienteListPagination, ReporteIntegracionPagination
+from .resumen_cache import RESUMEN_CARTERAS_TTL, version_resumen_carteras
 from .role_policy import (
     WRITE_ADMIN,
     WRITE_ANULAR_PAGOS,
@@ -1009,8 +1011,9 @@ def _cache_key_resumen_carteras(request, estado_param: str) -> str:
 
     actor = usuario_operativo_desde_request(request)
     actor_id = actor.id_usuario if actor else 'all'
-    estado = estado_param or 'default'
-    return f'ri_resumen_cartera:v1:{actor_id}:{estado}'
+    filtros = urlencode(sorted(request.query_params.items()))
+    version = version_resumen_carteras()
+    return f'ri_resumen_cartera:v2:{version}:{actor_id}:{estado_param}:{filtros}'
 
 
 def _cargar_auxiliar_reporte_integracion(
@@ -1349,6 +1352,13 @@ def _recolectar_reporte_integracion(
     resumen_por_cartera = force_resumen_por_cartera or _param_resumen_por_cartera(request)
 
     estado_param = (request.query_params.get('estado') or '').strip()
+    cache_key = None
+    if resumen_por_cartera:
+        cache_key = _cache_key_resumen_carteras(request, estado_param)
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
     if estado_param:
         lista = [e.strip() for e in estado_param.split(',') if e.strip()]
         if lista:
@@ -1384,6 +1394,17 @@ def _recolectar_reporte_integracion(
             qs = qs.filter(forma_pago=forma_pago_param)
 
     prestamos_qs = qs.order_by('numero_prestamo')
+    if resumen_por_cartera:
+        prestamos_qs = prestamos_qs.select_related(None).only(
+            'id_prestamo',
+            'id_cliente',
+            'id_cartera',
+            'monto',
+            'plazo',
+            'forma_pago',
+            'tasa_interes',
+            'numero_prestamo',
+        )
     ids = list(prestamos_qs.values_list('id_prestamo', flat=True))
     fecha_reporte = timezone.localdate().isoformat()
     generado_en = ahora_local_iso()
@@ -1428,12 +1449,6 @@ def _recolectar_reporte_integracion(
             'previous': None,
             'all_rows': False,
         }
-
-    if resumen_por_cartera:
-        cache_key = _cache_key_resumen_carteras(request, estado_param)
-        cached = cache.get(cache_key)
-        if cached is not None:
-            return cached
 
     (
         primera_cuota,
@@ -1509,7 +1524,7 @@ def _recolectar_reporte_integracion(
             'all_rows': True,
             'solo_resumen': True,
         }
-        cache.set(cache_key, payload, timeout=120)
+        cache.set(cache_key, payload, timeout=RESUMEN_CARTERAS_TTL)
         return payload
 
     resumen = {
