@@ -386,30 +386,34 @@ def exportar_hoja_cobros_listado_pdf(datos: dict) -> bytes:
         'SALDO PENDIENTE',
         'FECHA INICIAL',
         'FECHA FINAL',
+        'CUOTA FIJA',
         'CUOTA PENDIENTE',
         'NOTA DE COBRO',
     ]
     col_widths = [
-        8 * mm,
-        22 * mm,
-        42 * mm,
-        22 * mm,
-        16 * mm,
-        22 * mm,
-        22 * mm,
+        7 * mm,
         20 * mm,
+        38 * mm,
         20 * mm,
-        24 * mm,
         14 * mm,
+        20 * mm,
+        20 * mm,
+        18 * mm,
+        18 * mm,
+        20 * mm,
+        22 * mm,
+        13 * mm,
     ]
 
     table_data = [[_parrafo(h, header_style) for h in headers]]
     filas = list(datos.get('filas') or [])
     total_cuota = Decimal('0.00')
+    total_cuota_fija = Decimal('0.00')
     total_saldo_pendiente = Decimal('0.00')
     for idx, fila in enumerate(filas, start=1):
         monto_cuota = fila.get('cuota_siguiente_monto') or fila.get('cuota')
         total_cuota += _decimal_desde_campo(monto_cuota)
+        total_cuota_fija += _decimal_desde_campo(fila.get('cuota'))
         total_saldo_pendiente += _decimal_desde_campo(fila.get('saldo_actual'))
         table_data.append(
             [
@@ -422,6 +426,7 @@ def exportar_hoja_cobros_listado_pdf(datos: dict) -> bytes:
                 _parrafo(_money(fila.get('saldo_actual')) or '—', cell_right),
                 _parrafo(_fecha_celda(fila.get('fecha_entrega')) or '—', cell_center),
                 _parrafo(_fecha_celda(fila.get('fecha_vencimiento')) or '—', cell_center),
+                _parrafo(_money(fila.get('cuota')) or '—', cell_right),
                 _parrafo(_cuota_pendiente_listado_fila(fila), cell_center),
                 '',
             ]
@@ -444,6 +449,7 @@ def exportar_hoja_cobros_listado_pdf(datos: dict) -> bytes:
             _parrafo(_money(total_saldo_pendiente) if total_saldo_pendiente else '', cell_right),
             '',
             '',
+            _parrafo(_money(total_cuota_fija) if total_cuota_fija else '', cell_right),
             _parrafo(_money(total_cuota) if total_cuota else '', cell_center),
             '',
         ]
