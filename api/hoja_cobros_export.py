@@ -387,7 +387,7 @@ def exportar_hoja_cobros_listado_pdf(datos: dict) -> bytes:
         'FECHA INICIAL',
         'FECHA FINAL',
         'CUOTA PENDIENTE',
-        'ESPACIO',
+        'NOTA DE COBRO',
     ]
     col_widths = [
         8 * mm,
@@ -547,7 +547,7 @@ def exportar_hoja_cobros_pdf(datos: dict) -> bytes:
         'Nº PRESTAMO',
         'CELULAR',
         'ABONO DE CUOTAS',
-        'ESPACIO',
+        'NOTA DE COBRO',
     ]
     col_widths = [
         8 * mm,
