@@ -81,6 +81,7 @@ from .core.distribucion_pago import (
     cuotas_cubiertas_por_pago_acumulado,
     cuotas_pagadas_completas,
     pendiente_cuota,
+    total_abonado_prestamo,
 )
 from .core.reporte_sar_regulatorio import generar_reporte_sar_trimestral
 from .reporte_sar_export import exportar_reporte_sar_trimestral_pdf, nombre_archivo_reporte_sar
@@ -164,26 +165,34 @@ def _resolver_pago_factura(pago: Pago) -> Pago:
 
 
 def _contexto_recibo_cobro(pago: Pago) -> dict:
-    """Datos de préstamo/cuotas para el recibo de cobro (balance, atrazos, progreso)."""
+    """Datos de préstamo/cuotas para el recibo de cobro (balance, atrazos, saldo vs abonos)."""
     prestamo = pago.id_prestamo
     plan = list(
         PrestamoCuota.objects.filter(id_prestamo=prestamo).order_by('numero_cuota'),
     )
-    pagos_qs = filtrar_pagos_vigentes(
-        Pago.objects.filter(id_prestamo=prestamo).only(
-            'id_pago',
-            'documento',
-            'capital',
-            'interes',
-            'mora',
-            'anulado',
-            'detalle_distribucion',
-        ),
+    pagos_qs = list(
+        filtrar_pagos_vigentes(
+            Pago.objects.filter(id_prestamo=prestamo).only(
+                'id_pago',
+                'documento',
+                'capital',
+                'interes',
+                'mora',
+                'anulado',
+                'detalle_distribucion',
+            ),
+        )
     )
     abonado_por_cuota = abonado_por_cuota_desde_pagos(pagos_qs)
+    abonos_total = total_abonado_prestamo(pagos_qs)
     pagadas = cuotas_pagadas_completas(plan, abonado_por_cuota)
-    total_cuotas = len(plan) if plan else int(prestamo.plazo or 0)
-    cuotas_pagadas = len(pagadas)
+    saldo_total, _saldo_pendiente = saldos_reporte_integracion(
+        prestamo,
+        plan,
+        abonado_por_cuota if plan else None,
+        abonos_total,
+        paid_nums=pagadas,
+    )
 
     hoy = timezone.localdate()
     atrasos = Decimal('0.00')
@@ -217,8 +226,8 @@ def _contexto_recibo_cobro(pago: Pago) -> dict:
         'atrasos': atrasos,
         'sgte_cta': sgte_cta,
         'vencimiento': vencimiento,
-        'cuotas_pagadas': cuotas_pagadas,
-        'total_cuotas': total_cuotas,
+        'saldo_total': saldo_total,
+        'abonos_total': abonos_total,
         'pago_a_cuotas': round_money(Decimal(pago.capital) + Decimal(pago.interes)),
         'mora': round_money(Decimal(pago.mora or 0)),
     }
@@ -372,12 +381,8 @@ def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
     row('SALDO PENDIENTE', money(ctx['balance']), body, False, 4.3)
     row('ATRASOS', money(ctx['atrasos']), body, False, 4.3)
     row('SGTE. CTA', money(ctx['sgte_cta']), body, False, 4.3)
-    progreso = (
-        f"{ctx['cuotas_pagadas']} DE {ctx['total_cuotas']}"
-        if ctx['total_cuotas']
-        else str(ctx['cuotas_pagadas'])
-    )
-    row('PAGADO', progreso, body, False, 4.3)
+    row('SALDO TOTAL', money(ctx['saldo_total']), body, False, 4.3)
+    row('ABONOS', money(ctx['abonos_total']), body, False, 4.3)
     row('Pago a cuotas', money(ctx['pago_a_cuotas']), body, False, 4.3)
     row('Mora', money(ctx['mora']), body, False, 4.8)
     sep()
