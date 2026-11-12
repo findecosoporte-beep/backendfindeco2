@@ -186,6 +186,8 @@ def _contexto_recibo_cobro(pago: Pago) -> dict:
     abonado_por_cuota = abonado_por_cuota_desde_pagos(pagos_qs)
     abonos_total = total_abonado_prestamo(pagos_qs)
     pagadas = cuotas_pagadas_completas(plan, abonado_por_cuota)
+    total_cuotas = len(plan) if plan else int(prestamo.plazo or 0)
+    cuotas_pagadas = len(pagadas)
     saldo_total, _saldo_pendiente = saldos_reporte_integracion(
         prestamo,
         plan,
@@ -226,6 +228,8 @@ def _contexto_recibo_cobro(pago: Pago) -> dict:
         'atrasos': atrasos,
         'sgte_cta': sgte_cta,
         'vencimiento': vencimiento,
+        'cuotas_pagadas': cuotas_pagadas,
+        'total_cuotas': total_cuotas,
         'saldo_total': saldo_total,
         'abonos_total': abonos_total,
         'pago_a_cuotas': round_money(Decimal(pago.capital) + Decimal(pago.interes)),
@@ -381,6 +385,12 @@ def _build_pago_invoice_pdf(pago: Pago, ticket_format: str = '58') -> bytes:
     row('SALDO PENDIENTE', money(ctx['balance']), body, False, 4.3)
     row('ATRASOS', money(ctx['atrasos']), body, False, 4.3)
     row('SGTE. CTA', money(ctx['sgte_cta']), body, False, 4.3)
+    progreso = (
+        f"{ctx['cuotas_pagadas']} DE {ctx['total_cuotas']}"
+        if ctx['total_cuotas']
+        else str(ctx['cuotas_pagadas'])
+    )
+    row('CUOTAS PAGADAS', progreso, body, False, 4.3)
     row('SALDO TOTAL', money(ctx['saldo_total']), body, False, 4.3)
     row('ABONOS', money(ctx['abonos_total']), body, False, 4.3)
     row('Pago a cuotas', money(ctx['pago_a_cuotas']), body, False, 4.3)
